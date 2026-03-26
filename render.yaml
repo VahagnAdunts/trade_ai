@@ -1,0 +1,10 @@
+# Render Blueprint — optional one-click deploy
+# https://render.com/docs/blueprint-spec
+# Python version: use .python-version (3.12.8) so pydantic-core installs from wheels.
+services:
+  - type: worker
+    name: tred-ai-telegram
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --telegram-runner
+    # Set secrets in Render dashboard: STOCK_DATA_API_KEY, LLM keys, TELEGRAM_*, etc.

@@ -83,6 +83,12 @@ python main.py --telegram-runner
 
 Then send `/run` to your configured bot chat. Supported commands: `/run`, `/status`, `/help`.
 
+### Render (Background Worker)
+
+Use **Background Worker** with start command `python main.py --telegram-runner`.  
+The repo includes **`.python-version`** (`3.12.8`) so installs use wheels for `pydantic-core` (avoid Python 3.14 + Rust build failures).  
+Alternatively set env **`PYTHON_VERSION=3.12.8`** in the Render dashboard.
+
 ## Environment variables
 
 Required:

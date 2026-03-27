@@ -132,6 +132,12 @@ class AppConfig:
     telegram_enabled: bool
     telegram_bot_token: Optional[str]
     telegram_chat_id: Optional[str]
+    alpaca_enabled: bool
+    alpaca_api_key_id: Optional[str]
+    alpaca_api_secret_key: Optional[str]
+    alpaca_paper: bool
+    alpaca_order_dollars: float
+    alpaca_hold_seconds: int
     symbols: List[str]
 
     @staticmethod
@@ -140,6 +146,22 @@ class AppConfig:
         telegram_bot_token = _parse_optional_str(os.getenv("TELEGRAM_BOT_TOKEN"))
         telegram_chat_id = _parse_optional_str(os.getenv("TELEGRAM_CHAT_ID"))
         telegram_enabled = bool(telegram_enabled and telegram_bot_token and telegram_chat_id)
+
+        alpaca_enabled = _parse_bool(os.getenv("ALPACA_ENABLED", "false"))
+        alpaca_api_key_id = _parse_optional_str(os.getenv("ALPACA_API_KEY_ID"))
+        alpaca_api_secret_key = _parse_optional_str(os.getenv("ALPACA_API_SECRET_KEY"))
+        if alpaca_enabled and (not alpaca_api_key_id or not alpaca_api_secret_key):
+            raise ValueError(
+                "ALPACA_ENABLED=true requires ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY"
+            )
+
+        alpaca_paper = _parse_bool(os.getenv("ALPACA_PAPER", "true"))
+        alpaca_order_dollars = _parse_positive_float(
+            os.getenv("ALPACA_ORDER_DOLLARS"),
+            "ALPACA_ORDER_DOLLARS",
+            default="100",
+        )
+        alpaca_hold_seconds = _parse_positive_int(os.getenv("ALPACA_HOLD_SECONDS", "3600"))
 
         return AppConfig(
             stock_data_api_key=_required("STOCK_DATA_API_KEY"),
@@ -155,6 +177,12 @@ class AppConfig:
             telegram_enabled=telegram_enabled,
             telegram_bot_token=telegram_bot_token,
             telegram_chat_id=telegram_chat_id,
+            alpaca_enabled=alpaca_enabled,
+            alpaca_api_key_id=alpaca_api_key_id,
+            alpaca_api_secret_key=alpaca_api_secret_key,
+            alpaca_paper=alpaca_paper,
+            alpaca_order_dollars=alpaca_order_dollars,
+            alpaca_hold_seconds=alpaca_hold_seconds,
             symbols=_parse_symbols(os.getenv("SYMBOLS")),
         )
 
@@ -188,3 +216,17 @@ def _parse_optional_str(raw: str | None) -> Optional[str]:
 def _parse_bool(raw: str) -> bool:
     v = (raw or "").strip().lower()
     return v in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_positive_float(raw: str | None, label: str, *, default: str) -> float:
+    v = float((raw or default).strip())
+    if v <= 0:
+        raise ValueError(f"{label} must be positive")
+    return v
+
+
+def _parse_positive_int(raw: str | None) -> int:
+    v = int((raw or "3600").strip())
+    if v <= 0:
+        raise ValueError("ALPACA_HOLD_SECONDS must be positive")
+    return v

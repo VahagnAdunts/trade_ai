@@ -5,8 +5,9 @@ import html
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional
+from typing import Callable, Iterable, List, Optional, Tuple
 
+from app.alpaca_trading import alpaca_consensus_round_trip
 from app.config import AppConfig
 from app.data_provider import TwelveDataClient
 from app.features import build_feature_context, recent_bars_snapshot
@@ -158,6 +159,8 @@ async def run_analysis(
         },
     )
 
+    alpaca_tasks: List[Tuple[str, asyncio.Task]] = []
+
     for symbol in config.symbols:
         print(f"\n==================== SYMBOL: {symbol} ====================")
         _emit(on_event, {"type": "symbol_phase", "phase": "start", "symbol": symbol})
@@ -186,6 +189,9 @@ async def run_analysis(
         print(f"[{symbol}] STEP 2: RUNNING MODEL ANALYSIS")
         _emit(on_event, {"type": "models_started", "symbol": symbol})
 
+        decisions: List[dict] = []
+        parsed: List[LLMDecision] = []
+
         async def _run_one(label: str, analyzer) -> tuple:
             try:
                 result = await asyncio.to_thread(analyzer.analyze, symbol, context)
@@ -196,8 +202,6 @@ async def run_analysis(
         model_tasks = [
             asyncio.create_task(_run_one(label, a)) for label, a in analyzers
         ]
-        decisions: List[dict] = []
-        parsed: List[LLMDecision] = []
 
         for done in asyncio.as_completed(model_tasks):
             label, result, err = await done
@@ -267,7 +271,7 @@ async def run_analysis(
         _print_consensus(symbol, consensus)
         _emit(on_event, {"type": "consensus", "symbol": symbol, "consensus": consensus})
 
-        full_report["symbols"][symbol] = {
+        sym_entry = {
             "candles_count": len(points),
             "data_csv_path": str(csv_path),
             "context_mode": config.context_mode,
@@ -276,6 +280,38 @@ async def run_analysis(
             "telegram_notified": telegram_sent,
             "telegram_error": telegram_error,
         }
+
+        if consensus.get("passes_threshold") and config.alpaca_enabled:
+            aligned = consensus.get("aligned_action")
+            assert aligned in ("long", "short")
+            print(
+                f"[{symbol}] ALPACA: scheduling {aligned.upper()} market order, "
+                f"close after {config.alpaca_hold_seconds}s (paper={config.alpaca_paper})"
+            )
+            task = asyncio.create_task(
+                alpaca_consensus_round_trip(config, symbol, aligned)
+            )
+            alpaca_tasks.append((symbol, task))
+            sym_entry["alpaca"] = {"scheduled": True, "side": aligned}
+
+        full_report["symbols"][symbol] = sym_entry
+
+    if alpaca_tasks:
+        print(
+            f"\n[Alpaca] Waiting for {len(alpaca_tasks)} round-trip(s) "
+            f"({config.alpaca_hold_seconds}s hold each, parallel)..."
+        )
+        symbols_ordered = [s for s, _ in alpaca_tasks]
+        gather_tasks = [t for _, t in alpaca_tasks]
+        results = await asyncio.gather(*gather_tasks, return_exceptions=True)
+        for sym, res in zip(symbols_ordered, results):
+            if isinstance(res, Exception):
+                full_report["symbols"][sym]["alpaca"] = {
+                    "ok": False,
+                    "error": str(res),
+                }
+            else:
+                full_report["symbols"][sym]["alpaca"] = res
 
     json_path = output_dir / "report.json"
     md_path = output_dir / "report.md"
@@ -327,6 +363,8 @@ def _to_markdown(report: dict) -> str:
         lines.append(
             f"- Consensus: {c['aligned_action'] or 'none'} | min confidence: {c['minimum_confidence']} | passes: {c['passes_threshold']}"
         )
+        if data.get("alpaca") is not None:
+            lines.append(f"- Alpaca: {json.dumps(data['alpaca'])}")
         for d in data["model_decisions"]:
             if "error" in d:
                 lines.append(f"  - model error: {d['error']}")
@@ -394,6 +432,7 @@ def _to_html(report: dict) -> str:
           <p><strong>Consensus:</strong> {html.escape(str(c['aligned_action'] or 'none'))}
              | min confidence: {c['minimum_confidence']}%
              | passes: {c['passes_threshold']}</p>
+          <p><strong>Alpaca:</strong> {html.escape(json.dumps(data.get("alpaca"))) if data.get("alpaca") is not None else "—"}</p>
             <table>
             <thead>
               <tr><th>Model</th><th>Long %</th><th>Short %</th><th>Chosen</th><th>Win %</th><th>Rationale</th></tr>

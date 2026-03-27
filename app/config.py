@@ -159,9 +159,13 @@ class AppConfig:
         alpaca_order_dollars = _parse_positive_float(
             os.getenv("ALPACA_ORDER_DOLLARS"),
             "ALPACA_ORDER_DOLLARS",
-            default="100",
+            default="500",
         )
-        alpaca_hold_seconds = _parse_positive_int(os.getenv("ALPACA_HOLD_SECONDS", "3600"))
+        alpaca_hold_seconds = _parse_positive_int_env(
+            os.getenv("ALPACA_HOLD_SECONDS"),
+            "ALPACA_HOLD_SECONDS",
+            default="3600",
+        )
 
         return AppConfig(
             stock_data_api_key=_required("STOCK_DATA_API_KEY"),
@@ -225,8 +229,8 @@ def _parse_positive_float(raw: str | None, label: str, *, default: str) -> float
     return v
 
 
-def _parse_positive_int(raw: str | None) -> int:
-    v = int((raw or "3600").strip())
+def _parse_positive_int_env(raw: str | None, label: str, *, default: str) -> int:
+    v = int((raw or default).strip())
     if v <= 0:
-        raise ValueError("ALPACA_HOLD_SECONDS must be positive")
+        raise ValueError(f"{label} must be positive")
     return v

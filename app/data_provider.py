@@ -9,6 +9,24 @@ from app.models import OHLCVPoint
 
 
 TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
+TWELVE_DATA_QUOTE_URL = "https://api.twelvedata.com/quote"
+
+
+def fetch_quote_close_sync(symbol: str, api_key: str, timeout: float = 30.0) -> float:
+    """
+    Last quote close price (USD) for sizing whole-share orders (e.g. Alpaca shorts).
+    Uses the same Twelve Data key as hourly candles.
+    """
+    params = {"symbol": symbol, "apikey": api_key}
+    response = httpx.get(TWELVE_DATA_QUOTE_URL, params=params, timeout=timeout)
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("status") == "error":
+        raise ValueError(f"TwelveData quote error for {symbol}: {payload.get('message')}")
+    close = payload.get("close")
+    if close is None or close == "":
+        raise ValueError(f"No close price in quote for {symbol}")
+    return float(close)
 
 
 class TwelveDataClient:

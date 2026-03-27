@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Tuple
 
-from app.alpaca_trading import alpaca_consensus_round_trip
+from app.alpaca_trading import alpaca_consensus_round_trip, log_alpaca_account_health
 from app.config import AppConfig
 from app.data_provider import TwelveDataClient
 from app.features import build_feature_context, recent_bars_snapshot
@@ -297,6 +297,7 @@ async def run_analysis(
         full_report["symbols"][symbol] = sym_entry
 
     if alpaca_tasks:
+        log_alpaca_account_health(config)
         print(
             f"\n[Alpaca] Waiting for {len(alpaca_tasks)} round-trip(s) "
             f"({config.alpaca_hold_seconds}s hold each, parallel)..."

@@ -14,6 +14,7 @@ from app.llm_clients import ClaudeAnalyzer, GeminiAnalyzer, GrokAnalyzer, OpenAI
 from app.telegram_notifier import TelegramConfig, send_telegram_message
 from app.models import (
     CONSENSUS_MIN_CONFIDENCE,
+    CONSENSUS_MIN_CONFIDENCE_CRYPTO,
     CONSENSUS_MIN_MODELS,
     ConsensusResult,
     LLMDecision,
@@ -64,7 +65,11 @@ def _print_data_summary(symbol: str, points: list) -> None:
 
 def _print_model_result(decision: LLMDecision) -> None:
     if decision.crypto_mode:
-        bar = "≥ entry bar" if decision.long_confidence >= CONSENSUS_MIN_CONFIDENCE else "below entry bar"
+        bar = (
+            "≥ entry bar"
+            if decision.long_confidence >= CONSENSUS_MIN_CONFIDENCE_CRYPTO
+            else "below entry bar"
+        )
         print(
             f"[{decision.symbol}] {decision.model.upper()} -> "
             f"long worthiness {decision.long_confidence}% ({bar})"
@@ -113,7 +118,7 @@ def _consensus(symbol: str, decisions: Iterable[LLMDecision]) -> ConsensusResult
 def _consensus_crypto(symbol: str, decisions: Iterable[LLMDecision]) -> ConsensusResult:
     """Spot crypto: models only score long worthiness; consensus = enough models above threshold."""
     decisions = list(decisions)
-    supporters = [d for d in decisions if d.long_confidence >= CONSENSUS_MIN_CONFIDENCE]
+    supporters = [d for d in decisions if d.long_confidence >= CONSENSUS_MIN_CONFIDENCE_CRYPTO]
     passes = len(supporters) >= CONSENSUS_MIN_MODELS
     min_conf = min((d.long_confidence for d in supporters), default=0)
     return ConsensusResult(
@@ -165,7 +170,7 @@ async def run_analysis(
         "consensus_rule": (
             (
                 f">= {CONSENSUS_MIN_MODELS} of 4 models with long_confidence >= "
-                f"{CONSENSUS_MIN_CONFIDENCE} (spot crypto long-entry only)"
+                f"{CONSENSUS_MIN_CONFIDENCE_CRYPTO} (spot crypto long-entry only)"
             )
             if crypto
             else (

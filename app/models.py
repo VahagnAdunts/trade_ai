@@ -12,6 +12,7 @@ Side = Literal["long", "short"]
 # Must stay aligned with consensus logic in app.engine.
 CONSENSUS_MIN_MODELS = 3
 CONSENSUS_MIN_CONFIDENCE = 60
+CONSENSUS_MIN_CONFIDENCE_CRYPTO = 70
 
 
 class OHLCVPoint(BaseModel):
@@ -62,7 +63,7 @@ class LLMDecision(BaseModel):
         if self.crypto_mode:
             return (
                 "long"
-                if self.long_confidence >= CONSENSUS_MIN_CONFIDENCE
+                if self.long_confidence >= CONSENSUS_MIN_CONFIDENCE_CRYPTO
                 else "short"
             )
         if self.long_confidence >= self.short_confidence:

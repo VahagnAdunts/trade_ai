@@ -4,7 +4,7 @@ This project analyzes 100 major S&P 500 stocks using:
 - 30 days of hourly OHLCV price data
 - 4 separate LLMs (ChatGPT, Gemini, Claude, Grok)
 - each model outputs **`long_confidence`** and **`short_confidence`** (0–100 each); the app **chooses long if long ≥ short, else short** (ties → long), using the **winning** score as that model’s confidence
-- consensus filter: signal passes only when **at least 3 of 4 models agree on side** and each agreeing model has **winning confidence 60%+**
+- consensus filter: **at least 3 of 4 models** must qualify — **60%+** winning confidence (equities) or **70%+** long worthiness (crypto)
 
 ## What it does
 

@@ -14,31 +14,42 @@ from app.engine import run_analysis
 from app.telegram_notifier import TelegramConfig, send_telegram_message
 
 
-def _format_consensus_message(symbol: str, consensus: dict, per_model: dict) -> str:
+def _format_consensus_message(
+    symbol: str, consensus: dict, per_model: dict, *, crypto: bool = False
+) -> str:
     action = str(consensus.get("aligned_action") or "none").upper()
     min_conf = consensus.get("minimum_confidence", 0)
-    lines = [f"CONSENSUS ✅ {symbol} {action} (min {min_conf}%)"]
-    for key in ("chatgpt", "gemini", "claude", "grok"):
-        item = per_model.get(key, {})
-        if item.get("error"):
-            lines.append(f"{key}: ERR")
-            continue
-        lc = item.get("long_confidence", "-")
-        sc = item.get("short_confidence", "-")
-        side = str(item.get("action") or item.get("predicted_side") or "?").upper()
-        conf = item.get("confidence", item.get("winning_confidence", "-"))
-        lines.append(f"{key}: L{lc}/S{sc} -> {side} {conf}%")
+    tag = "[CRYPTO] " if crypto else ""
+    if crypto:
+        lines = [f"{tag}CONSENSUS ✅ {symbol} LONG entry (min long worthiness {min_conf}%)"]
+        for key in ("chatgpt", "gemini", "claude", "grok"):
+            item = per_model.get(key, {})
+            if item.get("error"):
+                lines.append(f"{key}: ERR")
+                continue
+            lc = item.get("long_confidence", "-")
+            lines.append(f"{key}: long worthiness {lc}%")
+    else:
+        lines = [f"{tag}CONSENSUS ✅ {symbol} {action} (min {min_conf}%)"]
+        for key in ("chatgpt", "gemini", "claude", "grok"):
+            item = per_model.get(key, {})
+            if item.get("error"):
+                lines.append(f"{key}: ERR")
+                continue
+            lc = item.get("long_confidence", "-")
+            sc = item.get("short_confidence", "-")
+            side = str(item.get("action") or item.get("predicted_side") or "?").upper()
+            conf = item.get("confidence", item.get("winning_confidence", "-"))
+            lines.append(f"{key}: L{lc}/S{sc} -> {side} {conf}%")
     return "\n".join(lines)
 
 
-async def _run_cli() -> None:
+async def _run_cli(*, crypto: bool = False) -> None:
     config = AppConfig.from_env()
-    output_path = await run_analysis(config)
-    print(f"Report generated: {output_path}")
-    html_report = Path("outputs/report.html").resolve()
-    if html_report.exists():
-        webbrowser.open(html_report.as_uri())
-        print(f"Opened browser report: {html_report}")
+    output_path = await run_analysis(config, crypto=crypto)
+    print(f"Research report: {output_path}")
+    if output_path.exists():
+        webbrowser.open(output_path.resolve().as_uri())
 
 
 async def _run_from_telegram(config: AppConfig, tg: TelegramConfig) -> None:
@@ -47,10 +58,12 @@ async def _run_from_telegram(config: AppConfig, tg: TelegramConfig) -> None:
             "Telegram runner requires TELEGRAM_ENABLED=true, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID."
         )
 
-    print("Telegram runner started. Send /run to your bot chat to trigger analysis.")
+    print(
+        "Telegram runner started. Send /run (equities) or /run_crypto (crypto) to trigger analysis."
+    )
     await send_telegram_message(
         tg,
-        "Tred_ai bot is online.\nCommands: /run, /status, /help",
+        "Tred_ai bot is online.\nCommands: /run, /run_crypto, /status, /help",
     )
 
     updates_url = f"https://api.telegram.org/bot{tg.bot_token}/getUpdates"
@@ -87,19 +100,27 @@ async def _run_from_telegram(config: AppConfig, tg: TelegramConfig) -> None:
             if cmd == "/help":
                 await send_telegram_message(
                     tg,
-                    "Commands:\n/run - start a full analysis\n/status - check current run status",
+                    "Commands:\n"
+                    "/run — full equity analysis (default universe)\n"
+                    "/run_crypto — crypto (USD pairs, default top 20)\n"
+                    "/status — check whether a run is in progress\n"
+                    "/help — this message",
                 )
                 continue
 
             if cmd == "/status":
                 await send_telegram_message(
                     tg,
-                    "Analysis is running." if running else "Idle. Send /run to start.",
+                    "Analysis is running."
+                    if running
+                    else "Idle. Send /run or /run_crypto to start.",
                 )
                 continue
 
-            if cmd != "/run":
+            if cmd not in ("/run", "/run_crypto"):
                 continue
+
+            crypto_run = cmd == "/run_crypto"
 
             if running:
                 await send_telegram_message(
@@ -109,7 +130,12 @@ async def _run_from_telegram(config: AppConfig, tg: TelegramConfig) -> None:
                 continue
 
             running = True
-            await send_telegram_message(tg, "Starting analysis now...")
+            start_msg = (
+                "Starting crypto analysis now..."
+                if crypto_run
+                else "Starting equity analysis now..."
+            )
+            await send_telegram_message(tg, start_msg)
             try:
                 per_symbol: dict = {}
                 pending_msgs: list = []
@@ -137,17 +163,20 @@ async def _run_from_telegram(config: AppConfig, tg: TelegramConfig) -> None:
                             symbol=symbol,
                             consensus=consensus,
                             per_model=per_symbol.get(symbol, {}),
+                            crypto=crypto_run,
                         )
                         pending_msgs.append(asyncio.create_task(send_telegram_message(tg, msg)))
 
-                output_path = await run_analysis(config, on_event=on_event)
+                output_path = await run_analysis(config, on_event=on_event, crypto=crypto_run)
                 if pending_msgs:
                     await asyncio.gather(*pending_msgs, return_exceptions=True)
                 report = json.loads(Path(output_path).read_text(encoding="utf-8"))
                 consensus_count = len(report.get("consensus_signals", []))
+                kind = "Crypto" if crypto_run else "Equity"
                 await send_telegram_message(
                     tg,
-                    f"Analysis completed.\nConsensus signals: {consensus_count}\nReport: {output_path}",
+                    f"{kind} analysis completed.\nConsensus signals: {consensus_count}\n"
+                    f"Report: {output_path}",
                 )
             except Exception as exc:
                 await send_telegram_message(
@@ -196,7 +225,12 @@ def main() -> None:
     parser.add_argument(
         "--telegram-runner",
         action="store_true",
-        help="Run long-lived Telegram command listener (/run triggers analysis)",
+        help="Run long-lived Telegram command listener (/run and /run_crypto trigger analysis)",
+    )
+    parser.add_argument(
+        "--crypto",
+        action="store_true",
+        help="Run crypto pipeline (default top-20 USD pairs, outputs under outputs_crypto/)",
     )
     args = parser.parse_args()
 
@@ -211,7 +245,7 @@ def main() -> None:
         )
         asyncio.run(_run_from_telegram(cfg, tg))
     else:
-        asyncio.run(_run_cli())
+        asyncio.run(_run_cli(crypto=args.crypto))
 
 
 if __name__ == "__main__":

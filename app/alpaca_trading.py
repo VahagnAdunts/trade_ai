@@ -27,11 +27,13 @@ def _format_alpaca_error(exc: Exception) -> str:
 
 
 def _alpaca_symbol(symbol: str) -> str:
-    """Map internal symbols to Alpaca tickers (e.g. BRK.B -> BRK-B)."""
+    """Map internal symbols to Alpaca tickers (crypto pairs stay BTC/USD; BRK.B -> BRK-B)."""
     u = symbol.upper()
+    if "/" in u:
+        return u
     if u == "BRK.B":
         return "BRK-B"
-    return symbol
+    return u
 
 
 def _make_client(cfg: AppConfig) -> TradingClient:
@@ -94,14 +96,49 @@ def _order_status(order: Any) -> str | None:
 
 
 def _submit_market_order(
-    client: TradingClient, symbol: str, side: str, config: AppConfig
+    client: TradingClient,
+    symbol: str,
+    side: str,
+    config: AppConfig,
+    *,
+    crypto: bool = False,
 ) -> Dict[str, Any]:
     """
-    Long: notional (fractional $). Short: whole-share qty from ALPACA_ORDER_DOLLARS vs
-    Twelve Data quote; skip with reason if budget cannot buy one share (Alpaca forbids notional shorts).
+    Equity long: notional (fractional $), TIF day. Equity short: whole-share qty from quote.
+    Crypto long: notional, TIF GTC (Alpaca crypto does not use `day`). Crypto short from flat:
+    not supported on spot — skipped with reason.
     """
     alpaca_sym = _alpaca_symbol(symbol)
     order_side = OrderSide.BUY if side == "long" else OrderSide.SELL
+
+    if crypto:
+        if side == "short":
+            return {
+                "skipped": True,
+                "reason": "crypto_spot_no_short",
+                "message": (
+                    "Alpaca spot crypto cannot open a short from a flat position (no borrow). "
+                    "Consensus short is not executed."
+                ),
+                "symbol": alpaca_sym,
+            }
+        notional_usd = config.alpaca_order_dollars
+        req = MarketOrderRequest(
+            symbol=alpaca_sym,
+            notional=notional_usd,
+            side=order_side,
+            time_in_force=TimeInForce.GTC,
+        )
+        order = client.submit_order(req)
+        return {
+            "skipped": False,
+            "order_id": _order_id(order),
+            "symbol": alpaca_sym,
+            "notional_usd": notional_usd,
+            "order_status": _order_status(order),
+            "asset_class": "crypto",
+        }
+
     if side == "long":
         notional_usd = config.alpaca_order_dollars
         req = MarketOrderRequest(
@@ -165,6 +202,8 @@ async def alpaca_consensus_round_trip(
     config: AppConfig,
     symbol: str,
     side: str,
+    *,
+    crypto: bool = False,
 ) -> Dict[str, Any]:
     """
     Submit a market order aligned with consensus (long=buy notional, short=sell whole shares),
@@ -180,11 +219,14 @@ async def alpaca_consensus_round_trip(
         "side": side,
         "order_dollars": dollars,
         "hold_seconds": hold,
+        "crypto": crypto,
     }
     client = _make_client(config)
 
     try:
-        open_res = await asyncio.to_thread(_submit_market_order, client, symbol, side, config)
+        open_res = await asyncio.to_thread(
+            _submit_market_order, client, symbol, side, config, crypto=crypto
+        )
         out["open"] = open_res
         if open_res.get("skipped"):
             out["skipped"] = True

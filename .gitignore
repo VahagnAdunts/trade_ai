@@ -3,5 +3,6 @@ __pycache__/
 *.pyc
 .env
 outputs/
+outputs_crypto/
 backtest/results/
 .DS_Store

@@ -12,10 +12,7 @@ This project analyzes 100 major S&P 500 stocks using:
 2. Sends each stock's data to each model independently.
 3. Validates model JSON output format.
 4. Finds consensus trade opportunities.
-5. Writes reports to:
-   - `outputs/report.json`
-   - `outputs/report.md`
-   - `outputs/report.html`
+5. Writes the research report to **`outputs/report.json`** (equity) or **`outputs_crypto/report.json`** (crypto via `--crypto` or Telegram `/run_crypto`).
 
 ### Live progress in the browser (recommended)
 
@@ -25,7 +22,7 @@ Starts a small local server, opens the dashboard, and **streams each step** (dat
 python main.py --serve
 ```
 
-Then click **Start analysis**. The latest static report is also available at `http://127.0.0.1:8765/outputs/report.html` after the run.
+Then click **Start analysis**. The latest JSON report is available at `http://127.0.0.1:8765/outputs/report.json` after the run.
 
 ### Historical backtest (optional, separate code)
 
@@ -73,7 +70,13 @@ Fill all required API keys in `.env`.
 python main.py
 ```
 
-Optional: `python main.py --serve --port 8765` for the live dashboard.
+Crypto (default top-20 USD pairs, report under `outputs_crypto/`):
+
+```bash
+python main.py --crypto
+```
+
+Optional: `python main.py --serve --port 8765` for the live dashboard (equity run from the UI).
 
 Telegram-triggered runs (production style):
 
@@ -81,7 +84,7 @@ Telegram-triggered runs (production style):
 python main.py --telegram-runner
 ```
 
-Then send `/run` to your configured bot chat. Supported commands: `/run`, `/status`, `/help`.
+Then send `/run` (equities) or `/run_crypto` (crypto) to your bot chat. Supported commands: `/run`, `/run_crypto`, `/status`, `/help`.
 
 ### Render (Background Worker)
 
@@ -103,7 +106,8 @@ Optional model overrides:
 - `GEMINI_MODEL`
 - `CLAUDE_MODEL`
 - `GROK_MODEL`
-- `SYMBOLS` (comma-separated list, e.g. `AAPL,MSFT,NVDA`)
+- `SYMBOLS` (comma-separated equities, e.g. `AAPL,MSFT,NVDA`)
+- `CRYPTO_SYMBOLS` (optional; comma-separated pairs like `BTC/USD,ETH/USD`; default top 20 in code)
 - `CONTEXT_MODE` (`raw|hybrid|features`, default `hybrid`)
 
 Optional notifications:

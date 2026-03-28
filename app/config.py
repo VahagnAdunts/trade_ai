@@ -116,6 +116,30 @@ DEFAULT_TOP100_SP500 = [
 DEFAULT_TOP10_SP500 = DEFAULT_TOP100_SP500
 DEFAULT_TOP25_SP500 = DEFAULT_TOP100_SP500[:25]
 
+# Twelve Data format (USD pairs). Override with CRYPTO_SYMBOLS in .env.
+DEFAULT_TOP20_CRYPTO = [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "XRP/USD",
+    "DOGE/USD",
+    "ADA/USD",
+    "AVAX/USD",
+    "LINK/USD",
+    "DOT/USD",
+    "SHIB/USD",
+    "LTC/USD",
+    "BCH/USD",
+    "ATOM/USD",
+    "UNI/USD",
+    "ETC/USD",
+    "NEAR/USD",
+    "APT/USD",
+    "FIL/USD",
+    "INJ/USD",
+    "ARB/USD",
+]
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -139,6 +163,7 @@ class AppConfig:
     alpaca_order_dollars: float
     alpaca_hold_seconds: int
     symbols: List[str]
+    crypto_symbols: List[str]
 
     @staticmethod
     def from_env() -> "AppConfig":
@@ -188,6 +213,7 @@ class AppConfig:
             alpaca_order_dollars=alpaca_order_dollars,
             alpaca_hold_seconds=alpaca_hold_seconds,
             symbols=_parse_symbols(os.getenv("SYMBOLS")),
+            crypto_symbols=_parse_crypto_symbols(os.getenv("CRYPTO_SYMBOLS")),
         )
 
 
@@ -201,6 +227,12 @@ def _required(name: str) -> str:
 def _parse_symbols(raw: str | None) -> List[str]:
     if not raw:
         return DEFAULT_TOP100_SP500
+    return [x.strip().upper() for x in raw.split(",") if x.strip()]
+
+
+def _parse_crypto_symbols(raw: str | None) -> List[str]:
+    if not raw:
+        return list(DEFAULT_TOP20_CRYPTO)
     return [x.strip().upper() for x in raw.split(",") if x.strip()]
 
 

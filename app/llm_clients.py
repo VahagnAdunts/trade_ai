@@ -11,6 +11,39 @@ from openai import OpenAI
 from app.models import LLMDecision
 
 
+SYSTEM_PROMPT_CRYPTO = """
+You are a trading signal model for a very short intraday strategy on CRYPTOCURRENCY (USD spot pairs).
+
+Focus strictly on HOURLY positions only: interpret the chart and momentum at the 1-hour timeframe.
+Do not optimize for daily, weekly, or longer horizons—every judgment must be for an hourly position.
+
+You receive one crypto pair context in one of these forms:
+- RAW: full hourly OHLCV candles.
+- FEATURES: pre-computed technical indicators/statistics.
+- HYBRID: features + small recent-candles snapshot.
+Use features as primary signal. If recent bars are present, use them as secondary confirmation.
+
+Trading intent (critical):
+- We only evaluate whether opening a LONG for this hour is worthwhile (spot execution does not use shorting).
+- We open a long for exactly one hour, then close it after that hour (no multi-hour holds).
+
+You must output ONE score (0–100):
+- long_confidence = how worthwhile / favorable it is to open a 1-hour LONG now (profit if price rises this hour).
+  Low values mean “not worth entering”; high values mean a more attractive long setup for this hour.
+
+Return ONLY valid JSON with:
+{
+  "long_confidence": <integer 0-100>,
+  "horizon": "hourly"
+}
+
+Rules:
+- Do not output short_confidence, rationale, or any short-trade logic.
+- Stay focused on hourly logic only.
+- Use only the provided data.
+"""
+
+
 SYSTEM_PROMPT = """
 You are a trading signal model for a very short intraday strategy.
 
@@ -38,47 +71,62 @@ Return ONLY valid JSON with:
 {
   "long_confidence": <integer 0-100>,
   "short_confidence": <integer 0-100>,
-  "rationale": "<short explanation>",
   "horizon": "hourly"
 }
 
 Rules:
 - Both integers are required. They need not sum to 100; they are separate strength estimates.
+- Do not output rationale or prose.
 - Stay focused on hourly position logic only; ignore longer-term bias unless it clearly affects the next hour.
 - Think only about the next one-hour bar: open now, close after one hour.
 - Use only the provided data.
-- Keep rationale under 45 words.
 """
 
 
 class ModelAnalyzer(Protocol):
     model_name: str
 
-    def analyze(self, symbol: str, market_context: str) -> LLMDecision:
+    def analyze(
+        self, symbol: str, market_context: str, *, crypto: bool = False
+    ) -> LLMDecision:
         ...
 
 
-def _coerce_decision(model: str, symbol: str, raw_text: str) -> LLMDecision:
+def _coerce_decision(model: str, symbol: str, raw_text: str, *, crypto: bool = False) -> LLMDecision:
     data = _parse_json_object(raw_text)
-    return _llm_decision_from_json(model, symbol, data)
+    return _llm_decision_from_json(model, symbol, data, crypto=crypto)
 
 
-def _llm_decision_from_json(model: str, symbol: str, data: dict) -> LLMDecision:
+def _llm_decision_from_json(
+    model: str, symbol: str, data: dict, *, crypto: bool = False
+) -> LLMDecision:
     lc = data.get("long_confidence", data.get("longConfidence"))
     sc = data.get("short_confidence", data.get("shortConfidence"))
+    horizon = str(data.get("horizon", "hourly")).strip()
+
+    if crypto:
+        if lc is None:
+            raise ValueError("JSON must include long_confidence (integer 0-100).")
+        return LLMDecision(
+            model=model,
+            symbol=symbol,
+            long_confidence=int(lc),
+            short_confidence=0,
+            horizon=horizon,
+            crypto_mode=True,
+        )
+
     if lc is None or sc is None:
         raise ValueError(
             "JSON must include long_confidence and short_confidence (integers 0-100 each)."
         )
-    rationale = str(data.get("rationale", "")).strip()
-    horizon = str(data.get("horizon", "hourly")).strip()
     return LLMDecision(
         model=model,
         symbol=symbol,
         long_confidence=int(lc),
         short_confidence=int(sc),
-        rationale=rationale or "(no rationale)",
         horizon=horizon,
+        crypto_mode=False,
     )
 
 
@@ -111,14 +159,15 @@ class OpenAIAnalyzer:
         self.client = OpenAI(api_key=api_key)
         self.fallback_models = ["gpt-4o-mini"]
 
-    def analyze(self, symbol: str, market_context: str) -> LLMDecision:
+    def analyze(self, symbol: str, market_context: str, *, crypto: bool = False) -> LLMDecision:
+        sys_prompt = SYSTEM_PROMPT_CRYPTO if crypto else SYSTEM_PROMPT
         model_candidates = [self.model_name] + self.fallback_models
         return _run_with_model_fallback(
             model_candidates=model_candidates,
             run_call=lambda model: self.client.responses.create(
                 model=model,
                 input=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": sys_prompt},
                     {
                         "role": "user",
                         "content": f"Symbol: {symbol}\n\nData:\n{market_context}",
@@ -128,6 +177,7 @@ class OpenAIAnalyzer:
             provider="OpenAI",
             output_model_name="chatgpt",
             symbol=symbol,
+            crypto=crypto,
         )
 
 
@@ -137,14 +187,15 @@ class GeminiAnalyzer:
         genai.configure(api_key=api_key)
         self.fallback_models = ["gemini-1.5-flash", "gemini-2.0-flash"]
 
-    def analyze(self, symbol: str, market_context: str) -> LLMDecision:
+    def analyze(self, symbol: str, market_context: str, *, crypto: bool = False) -> LLMDecision:
+        sys_prompt = SYSTEM_PROMPT_CRYPTO if crypto else SYSTEM_PROMPT
         model_candidates = [self.model_name] + self.fallback_models
         return _run_with_model_fallback(
             model_candidates=model_candidates,
             run_call=lambda model: (
                 genai.GenerativeModel(model_name=model)
                 .generate_content(
-                    f"{SYSTEM_PROMPT}\n\nSymbol: {symbol}\n\nData:\n{market_context}"
+                    f"{sys_prompt}\n\nSymbol: {symbol}\n\nData:\n{market_context}"
                 )
                 .text
                 or ""
@@ -152,6 +203,7 @@ class GeminiAnalyzer:
             provider="Gemini",
             output_model_name="gemini",
             symbol=symbol,
+            crypto=crypto,
         )
 
 
@@ -161,7 +213,8 @@ class ClaudeAnalyzer:
         self.client = anthropic.Anthropic(api_key=api_key)
         self.fallback_models = ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"]
 
-    def analyze(self, symbol: str, market_context: str) -> LLMDecision:
+    def analyze(self, symbol: str, market_context: str, *, crypto: bool = False) -> LLMDecision:
+        sys_prompt = SYSTEM_PROMPT_CRYPTO if crypto else SYSTEM_PROMPT
         model_candidates = [self.model_name] + self.fallback_models
         return _run_with_model_fallback(
             model_candidates=model_candidates,
@@ -170,7 +223,7 @@ class ClaudeAnalyzer:
                 for block in self.client.messages.create(
                     model=model,
                     max_tokens=300,
-                    system=SYSTEM_PROMPT,
+                    system=sys_prompt,
                     messages=[
                         {
                             "role": "user",
@@ -183,6 +236,7 @@ class ClaudeAnalyzer:
             provider="Claude",
             output_model_name="claude",
             symbol=symbol,
+            crypto=crypto,
         )
 
 
@@ -192,14 +246,15 @@ class GrokAnalyzer:
         self.client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
         self.fallback_models = ["grok-beta"]
 
-    def analyze(self, symbol: str, market_context: str) -> LLMDecision:
+    def analyze(self, symbol: str, market_context: str, *, crypto: bool = False) -> LLMDecision:
+        sys_prompt = SYSTEM_PROMPT_CRYPTO if crypto else SYSTEM_PROMPT
         model_candidates = [self.model_name] + self.fallback_models
         return _run_with_model_fallback(
             model_candidates=model_candidates,
             run_call=lambda model: self.client.responses.create(
                 model=model,
                 input=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": sys_prompt},
                     {
                         "role": "user",
                         "content": f"Symbol: {symbol}\n\nData:\n{market_context}",
@@ -209,6 +264,7 @@ class GrokAnalyzer:
             provider="Grok",
             output_model_name="grok",
             symbol=symbol,
+            crypto=crypto,
         )
 
 
@@ -218,6 +274,8 @@ def _run_with_model_fallback(
     provider: str,
     output_model_name: str,
     symbol: str,
+    *,
+    crypto: bool = False,
 ) -> LLMDecision:
     errors: List[str] = []
     tried = set()
@@ -227,7 +285,7 @@ def _run_with_model_fallback(
         tried.add(model)
         try:
             text = run_call(model).strip()
-            return _coerce_decision(output_model_name, symbol, text)
+            return _coerce_decision(output_model_name, symbol, text, crypto=crypto)
         except Exception as exc:
             if _is_model_not_found(exc):
                 errors.append(f"{model}: {exc}")

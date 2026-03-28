@@ -113,7 +113,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const div = document.createElement('div');
       div.className = 'sym';
       div.id = 'panel-' + symbol;
-      div.innerHTML = '<h3>' + escapeHtml(symbol) + '</h3><div class="meta"></div><table><thead><tr><th>Model</th><th>Long</th><th>Short</th><th>Chosen</th><th>Win</th><th>Note</th></tr></thead><tbody></tbody></table>';
+      div.innerHTML = '<h3>' + escapeHtml(symbol) + '</h3><div class="meta"></div><table><thead><tr><th>Model</th><th>Long</th><th>Short</th><th>Chosen</th><th>Win</th></tr></thead><tbody></tbody></table>';
       panels.appendChild(div);
       symState[symbol] = { div, tbody: div.querySelector('tbody'), meta: div.querySelector('.meta') };
       return symState[symbol];
@@ -136,7 +136,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (t === 'data_loaded') {
         appendLog('data', msg.symbol + ' — ' + msg.candles_count + ' hourly candles | ' + msg.range_start + ' → ' + msg.range_end);
         const p = ensurePanel(msg.symbol);
-        p.meta.textContent = 'Candles: ' + msg.candles_count + ' | CSV: ' + msg.csv_path;
+        p.meta.textContent = 'Candles: ' + msg.candles_count;
         return;
       }
       if (t === 'models_started') {
@@ -148,10 +148,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const tr = document.createElement('tr');
         if (msg.ok) {
           const d = msg.decision;
-          tr.innerHTML = '<td>' + escapeHtml(d.model) + '</td><td>' + d.long_confidence + '%</td><td>' + d.short_confidence + '%</td><td>' + escapeHtml(d.action) + '</td><td>' + d.confidence + '%</td><td>' + escapeHtml(d.rationale || '') + '</td>';
+          tr.innerHTML = '<td>' + escapeHtml(d.model) + '</td><td>' + d.long_confidence + '%</td><td>' + d.short_confidence + '%</td><td>' + escapeHtml(d.action) + '</td><td>' + d.confidence + '%</td>';
           appendLog('model', msg.symbol + ' ' + d.model + ' L' + d.long_confidence + '% S' + d.short_confidence + '% → ' + d.action + ' (win ' + d.confidence + '%)');
         } else {
-          tr.innerHTML = '<td>' + escapeHtml(msg.model_label) + '</td><td colspan="5" style="color:var(--err)">' + escapeHtml(msg.error || '') + '</td>';
+          tr.innerHTML = '<td>' + escapeHtml(msg.model_label) + '</td><td colspan="4" style="color:var(--err)">' + escapeHtml(msg.error || '') + '</td>';
           appendLog('err', msg.symbol + ' ' + msg.model_label + ': ' + (msg.error || ''));
         }
         p.tbody.appendChild(tr);
@@ -163,9 +163,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         return;
       }
       if (t === 'finished') {
-        appendLog('done', 'Finished — reports written.');
+        appendLog('done', 'Finished — report.json written.');
         reportLinks.style.display = 'block';
-        linksEl.innerHTML = '<a href="/outputs/report.html" target="_blank">Open static report (latest)</a> · JSON/MD paths in console run log.';
+        linksEl.innerHTML = '<a href="/outputs/report.json" target="_blank">Open report.json (latest)</a>';
         btn.disabled = false;
         return;
       }
@@ -255,7 +255,7 @@ async def websocket_run(websocket: WebSocket) -> None:
 
 
 def mount_static_outputs(application: FastAPI) -> None:
-    """Serve outputs/ so /outputs/report.html works after a run."""
+    """Serve outputs/ so /outputs/report.json is available after a run."""
     from fastapi.staticfiles import StaticFiles
 
     out = Path("outputs")

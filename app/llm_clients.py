@@ -37,6 +37,11 @@ Return ONLY valid JSON with:
   "horizon": "hourly"
 }
 
+Output rules (critical):
+- Your entire message must be nothing but that JSON object (optionally wrapped in a ```json code block).
+- Do not write analysis, markdown headings, bullet lists, or any text before or after the JSON.
+- If you add any prose, the pipeline will fail — reply with JSON only (first non-whitespace character: open-brace or backtick for a fence).
+
 Rules:
 - Do not output short_confidence, rationale, or any short-trade logic.
 - Stay focused on hourly logic only.
@@ -74,9 +79,14 @@ Return ONLY valid JSON with:
   "horizon": "hourly"
 }
 
+Output rules (critical):
+- Your entire message must be nothing but that JSON object (optionally wrapped in a ```json code block).
+- Do not write analysis, markdown headings, bullet lists, or any text before or after the JSON.
+- Reply with JSON only — any prose will break parsing.
+
 Rules:
 - Both integers are required. They need not sum to 100; they are separate strength estimates.
-- Do not output rationale or prose.
+- Do not output rationale or prose beyond the JSON.
 - Stay focused on hourly position logic only; ignore longer-term bias unless it clearly affects the next hour.
 - Think only about the next one-hour bar: open now, close after one hour.
 - Use only the provided data.
@@ -137,15 +147,30 @@ def _parse_json_object(raw_text: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Handle models returning markdown fences or explanatory wrappers.
-        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
-        if fenced:
+        pass
+
+    # Fenced ```json ... ``` (non-greedy inner object is often too small; try full fence body)
+    fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
+    if fenced:
+        try:
             return json.loads(fenced.group(1))
-        brace = re.search(r"(\{.*\})", text, flags=re.DOTALL)
-        if brace:
-            return json.loads(brace.group(1))
-        preview = text[:220].replace("\n", " ")
-        raise ValueError(f"Unable to parse JSON from model output. Preview: {preview}")
+        except json.JSONDecodeError:
+            pass
+
+    # First balanced JSON object anywhere in the string (handles prose before the object)
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text[i:])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            continue
+
+    preview = text[:220].replace("\n", " ")
+    raise ValueError(f"Unable to parse JSON from model output. Preview: {preview}")
 
 
 def _is_model_not_found(err: Exception) -> bool:
@@ -222,12 +247,15 @@ class ClaudeAnalyzer:
                 block.text
                 for block in self.client.messages.create(
                     model=model,
-                    max_tokens=300,
+                    max_tokens=800,
                     system=sys_prompt,
                     messages=[
                         {
                             "role": "user",
-                            "content": f"Symbol: {symbol}\n\nData:\n{market_context}",
+                            "content": (
+                                f"Symbol: {symbol}\n\nData:\n{market_context}\n\n"
+                                "Respond with ONLY the JSON object (no analysis, no markdown body)."
+                            ),
                         }
                     ],
                 ).content

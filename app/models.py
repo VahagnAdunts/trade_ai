@@ -1,18 +1,38 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from pydantic import BaseModel, Field, computed_field, field_validator
+
+if TYPE_CHECKING:
+    from app.config import AppConfig
 
 
 # Chosen side for the hourly trade (equity: derived from long vs short scores; crypto: long-only pipeline)
 Side = Literal["long", "short"]
 
-# Must stay aligned with consensus logic in app.engine.
-CONSENSUS_MIN_MODELS = 3
-CONSENSUS_MIN_CONFIDENCE = 60
-CONSENSUS_MIN_CONFIDENCE_CRYPTO = 70
+
+@dataclass(frozen=True)
+class _ConsensusRuntime:
+    min_models: int
+    min_confidence_equity: int
+    min_confidence_crypto: int
+
+
+# Defaults match .env.example; call configure_consensus_from_config when AppConfig is loaded.
+_consensus = _ConsensusRuntime(3, 60, 70)
+
+
+def configure_consensus_from_config(config: "AppConfig") -> None:
+    """Sync Pydantic computed fields (e.g. LLMDecision.action in crypto mode) with env-driven thresholds."""
+    global _consensus
+    _consensus = _ConsensusRuntime(
+        config.consensus_min_models,
+        config.consensus_min_confidence_pct,
+        config.consensus_min_confidence_crypto_pct,
+    )
 
 
 class OHLCVPoint(BaseModel):
@@ -63,7 +83,7 @@ class LLMDecision(BaseModel):
         if self.crypto_mode:
             return (
                 "long"
-                if self.long_confidence >= CONSENSUS_MIN_CONFIDENCE_CRYPTO
+                if self.long_confidence >= _consensus.min_confidence_crypto
                 else "short"
             )
         if self.long_confidence >= self.short_confidence:

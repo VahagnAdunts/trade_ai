@@ -14,11 +14,9 @@ from app.llm_clients import ClaudeAnalyzer, GeminiAnalyzer, GrokAnalyzer, OpenAI
 from app.regime import build_market_regime_payload, load_regime_cache
 from app.telegram_notifier import TelegramConfig, send_telegram_message
 from app.models import (
-    CONSENSUS_MIN_CONFIDENCE,
-    CONSENSUS_MIN_CONFIDENCE_CRYPTO,
-    CONSENSUS_MIN_MODELS,
     ConsensusResult,
     LLMDecision,
+    configure_consensus_from_config,
 )
 
 
@@ -75,11 +73,11 @@ def _print_data_summary(symbol: str, points: list) -> None:
     )
 
 
-def _print_model_result(decision: LLMDecision) -> None:
+def _print_model_result(decision: LLMDecision, config: AppConfig) -> None:
     if decision.crypto_mode:
         bar = (
             "≥ entry bar"
-            if decision.long_confidence >= CONSENSUS_MIN_CONFIDENCE_CRYPTO
+            if decision.long_confidence >= config.consensus_min_confidence_crypto_pct
             else "below entry bar"
         )
         print(
@@ -106,16 +104,18 @@ def _print_consensus(symbol: str, consensus: dict) -> None:
     )
 
 
-def _consensus(symbol: str, decisions: Iterable[LLMDecision]) -> ConsensusResult:
+def _consensus(symbol: str, decisions: Iterable[LLMDecision], config: AppConfig) -> ConsensusResult:
     decisions = list(decisions)
+    min_conf = config.consensus_min_confidence_pct
+    min_models = config.consensus_min_models
     qualified = {"long": [], "short": []}
     for d in decisions:
-        if d.confidence >= CONSENSUS_MIN_CONFIDENCE and d.action in qualified:
+        if d.confidence >= min_conf and d.action in qualified:
             qualified[d.action].append(d)
 
     chosen_side = max(qualified.keys(), key=lambda side: len(qualified[side]))
     supporters = qualified[chosen_side]
-    passes = len(supporters) >= CONSENSUS_MIN_MODELS
+    passes = len(supporters) >= min_models
     min_conf = min((d.confidence for d in supporters), default=0)
 
     return ConsensusResult(
@@ -127,11 +127,15 @@ def _consensus(symbol: str, decisions: Iterable[LLMDecision]) -> ConsensusResult
     )
 
 
-def _consensus_crypto(symbol: str, decisions: Iterable[LLMDecision]) -> ConsensusResult:
+def _consensus_crypto(
+    symbol: str, decisions: Iterable[LLMDecision], config: AppConfig
+) -> ConsensusResult:
     """Spot crypto: models only score long worthiness; consensus = enough models above threshold."""
     decisions = list(decisions)
-    supporters = [d for d in decisions if d.long_confidence >= CONSENSUS_MIN_CONFIDENCE_CRYPTO]
-    passes = len(supporters) >= CONSENSUS_MIN_MODELS
+    min_crypto = config.consensus_min_confidence_crypto_pct
+    min_models = config.consensus_min_models
+    supporters = [d for d in decisions if d.long_confidence >= min_crypto]
+    passes = len(supporters) >= min_models
     min_conf = min((d.long_confidence for d in supporters), default=0)
     return ConsensusResult(
         symbol=symbol,
@@ -154,6 +158,7 @@ async def run_analysis(
     *,
     crypto: bool = False,
 ) -> Path:
+    configure_consensus_from_config(config)
     provider = TwelveDataClient(api_key=config.stock_data_api_key)
     if out_dir == "outputs" and crypto:
         out_dir = "outputs_crypto"
@@ -181,13 +186,13 @@ async def run_analysis(
         "context_mode": config.context_mode,
         "consensus_rule": (
             (
-                f">= {CONSENSUS_MIN_MODELS} of 4 models with long_confidence >= "
-                f"{CONSENSUS_MIN_CONFIDENCE_CRYPTO} (spot crypto long-entry only)"
+                f">= {config.consensus_min_models} of 4 models with long_confidence >= "
+                f"{config.consensus_min_confidence_crypto_pct} (spot crypto long-entry only)"
             )
             if crypto
             else (
-                f">= {CONSENSUS_MIN_MODELS} of 4 models agree on long vs short "
-                f"with winning confidence >= {CONSENSUS_MIN_CONFIDENCE}"
+                f">= {config.consensus_min_models} of 4 models agree on long vs short "
+                f"with winning confidence >= {config.consensus_min_confidence_pct}"
             )
         ),
         "symbols": {},
@@ -291,7 +296,7 @@ async def run_analysis(
                 continue
             assert result is not None
             parsed.append(result)
-            _print_model_result(result)
+            _print_model_result(result, config)
             decisions.append(result.model_dump())
             _emit(
                 on_event,
@@ -306,9 +311,9 @@ async def run_analysis(
 
         if parsed:
             consensus = (
-                _consensus_crypto(symbol, parsed)
+                _consensus_crypto(symbol, parsed, config)
                 if crypto
-                else _consensus(symbol, parsed)
+                else _consensus(symbol, parsed, config)
             ).model_dump()
         else:
             consensus = ConsensusResult(

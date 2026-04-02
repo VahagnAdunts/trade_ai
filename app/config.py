@@ -164,6 +164,9 @@ class AppConfig:
     alpaca_hold_seconds: int
     symbols: List[str]
     crypto_symbols: List[str]
+    consensus_min_models: int
+    consensus_min_confidence_pct: int
+    consensus_min_confidence_crypto_pct: int
 
     @staticmethod
     def from_env() -> "AppConfig":
@@ -192,6 +195,18 @@ class AppConfig:
             default="3600",
         )
 
+        consensus_min_models = _parse_consensus_min_models(os.getenv("CONSENSUS_MIN_MODELS"))
+        consensus_min_confidence_pct = _parse_confidence_pct(
+            os.getenv("CONSENSUS_MIN_CONFIDENCE_PERCENT"),
+            "CONSENSUS_MIN_CONFIDENCE_PERCENT",
+            default="60",
+        )
+        consensus_min_confidence_crypto_pct = _parse_confidence_pct(
+            os.getenv("CONSENSUS_MIN_CONFIDENCE_CRYPTO_PERCENT"),
+            "CONSENSUS_MIN_CONFIDENCE_CRYPTO_PERCENT",
+            default="70",
+        )
+
         return AppConfig(
             stock_data_api_key=_required("STOCK_DATA_API_KEY"),
             openai_api_key=_required("OPENAI_API_KEY"),
@@ -214,6 +229,9 @@ class AppConfig:
             alpaca_hold_seconds=alpaca_hold_seconds,
             symbols=_parse_symbols(os.getenv("SYMBOLS")),
             crypto_symbols=_parse_crypto_symbols(os.getenv("CRYPTO_SYMBOLS")),
+            consensus_min_models=consensus_min_models,
+            consensus_min_confidence_pct=consensus_min_confidence_pct,
+            consensus_min_confidence_crypto_pct=consensus_min_confidence_crypto_pct,
         )
 
 
@@ -265,4 +283,18 @@ def _parse_positive_int_env(raw: str | None, label: str, *, default: str) -> int
     v = int((raw or default).strip())
     if v <= 0:
         raise ValueError(f"{label} must be positive")
+    return v
+
+
+def _parse_consensus_min_models(raw: str | None) -> int:
+    v = int((raw or "3").strip())
+    if not 1 <= v <= 4:
+        raise ValueError("CONSENSUS_MIN_MODELS must be between 1 and 4 (four LLMs)")
+    return v
+
+
+def _parse_confidence_pct(raw: str | None, label: str, *, default: str) -> int:
+    v = int((raw or default).strip())
+    if not 0 <= v <= 100:
+        raise ValueError(f"{label} must be between 0 and 100")
     return v

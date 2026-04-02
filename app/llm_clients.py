@@ -21,6 +21,7 @@ You receive one crypto pair context in one of these forms:
 - RAW: full hourly OHLCV candles.
 - FEATURES: pre-computed technical indicators/statistics.
 - HYBRID: features + small recent-candles snapshot.
+When "market_regime" is present in the JSON, it is real benchmark data (BTC/ETH vs this pair from the data provider), not fabricated.
 Use features as primary signal. If recent bars are present, use them as secondary confirmation.
 
 Trading intent (critical):
@@ -59,6 +60,7 @@ You receive one stock context in one of these forms:
 - RAW: full hourly OHLCV candles.
 - FEATURES: pre-computed technical indicators/statistics.
 - HYBRID: features + small recent-candles snapshot.
+When "market_regime" is present in the JSON, it is real benchmark data (SPY, QQQ, VIXY volatility ETF from the data provider), not fabricated.
 Use features as primary signal. If recent bars are present, use them as secondary confirmation.
 
 Trading intent (critical):

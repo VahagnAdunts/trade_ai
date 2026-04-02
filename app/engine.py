@@ -11,6 +11,7 @@ from app.config import AppConfig
 from app.data_provider import TwelveDataClient
 from app.features import build_feature_context, recent_bars_snapshot
 from app.llm_clients import ClaudeAnalyzer, GeminiAnalyzer, GrokAnalyzer, OpenAIAnalyzer
+from app.regime import build_market_regime_payload, load_regime_cache
 from app.telegram_notifier import TelegramConfig, send_telegram_message
 from app.models import (
     CONSENSUS_MIN_CONFIDENCE,
@@ -22,13 +23,22 @@ from app.models import (
 
 
 def _candles_to_context(
-    symbol: str, points: list, mode: str = "hybrid", *, crypto: bool = False
+    symbol: str,
+    points: list,
+    mode: str = "hybrid",
+    *,
+    crypto: bool = False,
+    market_regime: Optional[dict] = None,
 ) -> str:
     mode = (mode or "hybrid").strip().lower()
     if mode not in {"raw", "hybrid", "features"}:
         raise ValueError(f"Unsupported context mode: {mode}")
     if mode == "raw":
-        return _candles_to_raw_context(symbol, points, crypto=crypto)
+        body = _candles_to_raw_context(symbol, points, crypto=crypto)
+        if market_regime:
+            body += "\n\nmarket_regime (JSON, Twelve Data benchmarks):\n"
+            body += json.dumps(market_regime, indent=2)
+        return body
 
     features = build_feature_context(symbol, points)
     payload = {
@@ -37,6 +47,8 @@ def _candles_to_context(
         "context_mode": mode,
         "feature_snapshot": features,
     }
+    if market_regime is not None:
+        payload["market_regime"] = market_regime
     if mode == "hybrid":
         payload["recent_hourly_bars"] = recent_bars_snapshot(points, count=16)
     return json.dumps(payload, indent=2)
@@ -194,12 +206,32 @@ async def run_analysis(
 
     alpaca_tasks: List[Tuple[str, asyncio.Task]] = []
 
+    regime_cache = await load_regime_cache(provider, crypto=crypto)
+    re_err = regime_cache.get("fetch_errors") or {}
+    if re_err:
+        print(
+            f"[Regime] Some benchmarks failed to load (see report market_regime.fetch_errors): "
+            f"{', '.join(re_err.keys())}",
+            flush=True,
+        )
+    else:
+        print("[Regime] Benchmark series loaded for this run.", flush=True)
+
     for symbol in symbols_list:
         print(f"\n==================== SYMBOL: {symbol} ====================")
         _emit(on_event, {"type": "symbol_phase", "phase": "start", "symbol": symbol})
 
         points = await provider.fetch_hourly_30d(symbol)
-        context = _candles_to_context(symbol, points, config.context_mode, crypto=crypto)
+        market_regime = build_market_regime_payload(
+            symbol, points, regime_cache, crypto=crypto
+        )
+        context = _candles_to_context(
+            symbol,
+            points,
+            config.context_mode,
+            crypto=crypto,
+            market_regime=market_regime,
+        )
         _print_data_summary(symbol, points)
 
         first, last = points[0], points[-1]
@@ -311,6 +343,7 @@ async def run_analysis(
         sym_entry = {
             "candles_count": len(points),
             "context_mode": config.context_mode,
+            "market_regime": market_regime,
             "model_decisions": decisions,
             "consensus": consensus,
             "telegram_notified": telegram_sent,

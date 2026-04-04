@@ -15,11 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from alpaca.common.exceptions import APIError
 
-from app.alpaca_trading import (
-    _close_position,
-    _format_alpaca_error,
-    _make_client,
-)
+from app.alpaca_trading import _close_position_with_retries, _format_alpaca_error
 from app.config import AppConfig
 
 _file_lock = asyncio.Lock()
@@ -121,21 +117,22 @@ async def _close_and_finalize(
 ) -> None:
     pid = str(item["id"])
     symbol = str(item["symbol"])
-    try:
-        client = _make_client(config)
-        await asyncio.to_thread(_close_position, client, symbol)
+    _close_res, close_exc = await _close_position_with_retries(
+        config, symbol, hold_seconds=None
+    )
+    if close_exc is None:
         await clear_pending_close(config, pid)
         print(f"[Alpaca pending] closed & cleared {symbol} id={pid}", flush=True)
-    except Exception as exc:
-        err = _format_alpaca_error(exc)
-        if should_clear_stale_pending_no_position(exc, err):
-            await clear_pending_close(config, pid)
-            print(
-                f"[Alpaca pending] no position for {symbol}; cleared stale id={pid}",
-                flush=True,
-            )
-        else:
-            print(f"[Alpaca pending] close failed {symbol} id={pid}: {err}", flush=True)
+        return
+    err = _format_alpaca_error(close_exc)
+    if should_clear_stale_pending_no_position(close_exc, err):
+        await clear_pending_close(config, pid)
+        print(
+            f"[Alpaca pending] no position for {symbol}; cleared stale id={pid}",
+            flush=True,
+        )
+    else:
+        print(f"[Alpaca pending] close failed {symbol} id={pid}: {err}", flush=True)
 
 
 async def _delayed_close_task(config: AppConfig, item: Dict[str, Any]) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
@@ -193,9 +194,53 @@ def _submit_market_order(
 
 
 def _close_position(client: TradingClient, symbol: str) -> Dict[str, Any]:
+    """
+    Close via DELETE /v2/positions/{symbol}. Crypto pairs like BTC/USD must be
+    path-encoded (BTC%2FUSD); a raw slash breaks the URL into wrong segments.
+    """
     alpaca_sym = _alpaca_symbol(symbol)
-    order = client.close_position(alpaca_sym)
+    path_symbol = quote(str(alpaca_sym), safe="")
+    order = client.close_position(path_symbol)
     return {"close_order_id": _order_id(order), "symbol": alpaca_sym}
+
+
+async def _close_position_with_retries(
+    config: AppConfig,
+    symbol: str,
+    *,
+    hold_seconds: Optional[int] = None,
+    max_attempts: int = 4,
+) -> tuple[Dict[str, Any], Optional[Exception]]:
+    """
+    Use a fresh TradingClient per attempt. The open-time client must not be reused
+    after a long asyncio.sleep — idle HTTP connections are often closed by the server
+    or time out, so close_position would fail or hang.
+    """
+    if hold_seconds is not None:
+        detail = f"after {hold_seconds}s hold"
+    else:
+        detail = "recovery"
+    last_err: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        client = _make_client(config)
+        try:
+            print(
+                f"[Alpaca] {symbol} closing position ({detail}, attempt {attempt}/{max_attempts})...",
+                flush=True,
+            )
+            close_res = await asyncio.to_thread(_close_position, client, symbol)
+            return close_res, None
+        except Exception as exc:
+            last_err = exc
+            err_s = _format_alpaca_error(exc)
+            print(
+                f"[Alpaca] {symbol} close attempt {attempt} failed: {err_s}",
+                flush=True,
+            )
+            if attempt < max_attempts:
+                await asyncio.sleep(min(2.0 * attempt, 10.0))
+    assert last_err is not None
+    return {}, last_err
 
 
 async def alpaca_consensus_round_trip(
@@ -231,12 +276,12 @@ async def alpaca_consensus_round_trip(
         "hold_seconds": hold,
         "crypto": crypto,
     }
-    client = _make_client(config)
+    open_client = _make_client(config)
     pending_id: Optional[str] = None
 
     try:
         open_res = await asyncio.to_thread(
-            _submit_market_order, client, symbol, side, config, crypto=crypto
+            _submit_market_order, open_client, symbol, side, config, crypto=crypto
         )
         out["open"] = open_res
         if open_res.get("skipped"):
@@ -284,17 +329,19 @@ async def alpaca_consensus_round_trip(
 
     await asyncio.sleep(hold)
 
-    try:
-        close_res = await asyncio.to_thread(_close_position, client, symbol)
+    close_res, close_exc = await _close_position_with_retries(
+        config, symbol, hold_seconds=hold
+    )
+    if close_exc is None:
         out["close"] = close_res
         out["closed"] = True
         if pending_id:
             await clear_pending_close(config, pending_id)
-    except Exception as exc:
-        err = _format_alpaca_error(exc)
+    else:
+        err = _format_alpaca_error(close_exc)
         out["close_error"] = err
         out["closed"] = False
-        if pending_id and should_clear_stale_pending_no_position(exc, err):
+        if pending_id and should_clear_stale_pending_no_position(close_exc, err):
             await clear_pending_close(config, pending_id)
 
     return out

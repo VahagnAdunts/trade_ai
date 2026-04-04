@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Optional
-from urllib.parse import quote
+import time
+from typing import Any, Dict, List, Optional
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
@@ -35,6 +35,25 @@ def _alpaca_symbol(symbol: str) -> str:
     if u == "BRK.B":
         return "BRK-B"
     return u
+
+
+def _normalize_pair_key(symbol: str) -> str:
+    """Compare BTC/USD vs BTCUSD vs paper quirks: alphanumeric only, uppercased."""
+    return "".join(c for c in symbol.upper() if c.isalnum())
+
+
+def _find_open_position(client: TradingClient, symbol: str) -> Any:
+    """
+    Find the open Position for this symbol. Alpaca may use BTC/USD, BTCUSD, etc.;
+    path-based close by string often 404s — we match flexibly then close by asset_id.
+    """
+    want = _normalize_pair_key(_alpaca_symbol(symbol))
+    positions: List[Any] = client.get_all_positions()
+    for p in positions:
+        ps = getattr(p, "symbol", None) or ""
+        if _normalize_pair_key(str(ps)) == want:
+            return p
+    return None
 
 
 def _make_client(cfg: AppConfig) -> TradingClient:
@@ -195,13 +214,61 @@ def _submit_market_order(
 
 def _close_position(client: TradingClient, symbol: str) -> Dict[str, Any]:
     """
-    Close via DELETE /v2/positions/{symbol}. Crypto pairs like BTC/USD must be
-    path-encoded (BTC%2FUSD); a raw slash breaks the URL into wrong segments.
+    Close via DELETE /v2/positions/{symbol_or_asset_id}. Using the position's
+    asset_id (UUID) avoids URL/symbol-format mismatches (e.g. BTC/USD vs BTCUSD).
     """
-    alpaca_sym = _alpaca_symbol(symbol)
-    path_symbol = quote(str(alpaca_sym), safe="")
-    order = client.close_position(path_symbol)
+    pos = _find_open_position(client, symbol)
+    if pos is None:
+        raise Exception("Not Found")
+    alpaca_sym = str(getattr(pos, "symbol", "") or _alpaca_symbol(symbol))
+    order = client.close_position(getattr(pos, "asset_id"))
     return {"close_order_id": _order_id(order), "symbol": alpaca_sym}
+
+
+def _order_status_lower(order: Any) -> str:
+    st = getattr(order, "status", None)
+    if st is None:
+        return ""
+    if hasattr(st, "value"):
+        return str(st.value).lower()
+    return str(st).lower()
+
+
+async def _wait_for_fill_and_visible_position(
+    config: AppConfig,
+    order_id: str,
+    symbol: str,
+    *,
+    timeout_sec: float = 120.0,
+    poll_sec: float = 2.0,
+) -> tuple[bool, str]:
+    """
+    After submit_order, wait until the order is filled (or terminal failure) and
+    a matching open position exists. Otherwise we may sleep the hold with no position.
+    """
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        client = _make_client(config)
+
+        def _poll() -> tuple[Any, Any]:
+            o = client.get_order_by_id(order_id)
+            p = _find_open_position(client, symbol)
+            return o, p
+
+        try:
+            order, pos = await asyncio.to_thread(_poll)
+        except Exception as exc:
+            return False, f"poll_failed: {_format_alpaca_error(exc)}"
+
+        sv = _order_status_lower(order)
+        if sv in ("filled", "partially_filled") and pos is not None:
+            return True, sv
+        if sv in ("canceled", "rejected", "expired"):
+            return False, f"order_{sv}"
+
+        await asyncio.sleep(poll_sec)
+
+    return False, "timeout_waiting_fill_or_position"
 
 
 async def _close_position_with_retries(
@@ -289,9 +356,8 @@ async def alpaca_consensus_round_trip(
             out["reason"] = open_res.get("message", open_res.get("reason"))
             print(f"[Alpaca] {symbol} SHORT SKIPPED: {out['reason']}", flush=True)
             return out
-        out["ok"] = True
         st = open_res.get("order_status") or "?"
-        oid = open_res.get("order_id") or "?"
+        oid = open_res.get("order_id")
         if side == "long":
             print(
                 f"[Alpaca] {symbol} order accepted by API: id={oid} status={st} "
@@ -305,6 +371,25 @@ async def alpaca_consensus_round_trip(
                 f"side=short qty={open_res.get('qty')} @ ~${lp_s} (budget ${dollars:g}) "
                 f"paper={config.alpaca_paper}"
             )
+        if not oid:
+            out["error"] = "missing_order_id_after_submit"
+            out["phase"] = "open"
+            print(f"[Alpaca] {symbol} OPEN FAILED: no order id in response", flush=True)
+            return out
+        fill_ok, fill_reason = await _wait_for_fill_and_visible_position(
+            config, str(oid), symbol
+        )
+        out["fill_wait"] = {"ok": fill_ok, "reason": fill_reason}
+        if not fill_ok:
+            out["error"] = fill_reason
+            out["phase"] = "fill_wait"
+            print(
+                f"[Alpaca] {symbol} no tradable position after order (paper may be slow): {fill_reason}",
+                flush=True,
+            )
+            return out
+        print(f"[Alpaca] {symbol} order filled & position visible ({fill_reason})", flush=True)
+        out["ok"] = True
         pending_id, pending_record = new_pending_record(
             symbol=symbol,
             hold_seconds=hold,

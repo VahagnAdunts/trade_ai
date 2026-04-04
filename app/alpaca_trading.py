@@ -11,6 +11,7 @@ from alpaca.trading.requests import MarketOrderRequest
 
 from app.config import AppConfig
 from app.data_provider import fetch_quote_close_sync
+from app.telegram_notifier import TelegramConfig, send_telegram_message
 
 
 def _format_alpaca_error(exc: Exception) -> str:
@@ -212,6 +213,49 @@ def _submit_market_order(
     }
 
 
+def _safe_float(x: Any) -> Optional[float]:
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def _position_side_str(pos: Any) -> str:
+    s = getattr(pos, "side", None)
+    if s is None:
+        return ""
+    return str(getattr(s, "value", s) or "").lower()
+
+
+def _build_close_pnl_summary(pos: Any, close_order: Any) -> Dict[str, Any]:
+    """Best-effort P/L: long = proceeds - cost_basis; else prefer Alpaca unrealized_pl."""
+    u = _safe_float(getattr(pos, "unrealized_pl", None))
+    cost = _safe_float(getattr(pos, "cost_basis", None))
+    fq = _safe_float(getattr(close_order, "filled_qty", None)) or 0.0
+    exit_px = _safe_float(getattr(close_order, "filled_avg_price", None))
+    proceeds = (exit_px or 0.0) * fq
+    side = _position_side_str(pos)
+    pnl: Optional[float] = None
+    if "long" in side and cost is not None:
+        pnl = proceeds - cost
+    elif u is not None:
+        pnl = u
+    elif cost is not None:
+        pnl = proceeds - cost
+    return {
+        "pnl_usd": pnl,
+        "entry_avg": _safe_float(getattr(pos, "avg_entry_price", None)),
+        "exit_avg": exit_px,
+        "qty": _safe_float(getattr(pos, "qty", None)),
+        "cost_basis": cost,
+        "proceeds_usd": proceeds,
+        "unrealized_pl_at_close": u,
+        "side": side,
+    }
+
+
 def _close_position(client: TradingClient, symbol: str) -> Dict[str, Any]:
     """
     Close via DELETE /v2/positions/{symbol_or_asset_id}. Using the position's
@@ -222,7 +266,101 @@ def _close_position(client: TradingClient, symbol: str) -> Dict[str, Any]:
         raise Exception("Not Found")
     alpaca_sym = str(getattr(pos, "symbol", "") or _alpaca_symbol(symbol))
     order = client.close_position(getattr(pos, "asset_id"))
-    return {"close_order_id": _order_id(order), "symbol": alpaca_sym}
+    pnl_summary = _build_close_pnl_summary(pos, order)
+    return {
+        "close_order_id": _order_id(order),
+        "symbol": alpaca_sym,
+        "pnl_summary": pnl_summary,
+        "position_before_close": {
+            "symbol": alpaca_sym,
+            "avg_entry_price": getattr(pos, "avg_entry_price", None),
+            "qty": getattr(pos, "qty", None),
+            "cost_basis": getattr(pos, "cost_basis", None),
+            "market_value": getattr(pos, "market_value", None),
+            "unrealized_pl": getattr(pos, "unrealized_pl", None),
+            "side": _position_side_str(pos),
+        },
+    }
+
+
+def _format_alpaca_close_telegram(
+    *,
+    internal_symbol: str,
+    alpaca_sym: str,
+    crypto: bool,
+    hold_seconds: int,
+    paper: bool,
+    pnl_summary: Dict[str, Any],
+) -> str:
+    asset = "Crypto" if crypto else "Equity"
+    mode = "paper" if paper else "live"
+    pnl = pnl_summary.get("pnl_usd")
+    entry = pnl_summary.get("entry_avg")
+    exit_ = pnl_summary.get("exit_avg")
+    qty = pnl_summary.get("qty")
+    cost = pnl_summary.get("cost_basis")
+    proceeds = pnl_summary.get("proceeds_usd")
+    side = pnl_summary.get("side") or "?"
+
+    def _money(v: Any) -> str:
+        if v is None:
+            return "—"
+        try:
+            return f"${float(v):,.2f}"
+        except (TypeError, ValueError):
+            return str(v)
+
+    def _qty_str(v: Any) -> str:
+        if v is None:
+            return "—"
+        try:
+            s = f"{float(v):,.6f}".rstrip("0").rstrip(".")
+            return s if s else "—"
+        except (TypeError, ValueError):
+            return str(v)
+
+    if pnl is None:
+        pnl_line = "—"
+    else:
+        pnl_line = f"${float(pnl):+,.2f}"
+
+    lines = [
+        f"Alpaca close ({mode})",
+        f"{asset} · {internal_symbol} (broker: {alpaca_sym})",
+        f"Side: {side} · Hold: {hold_seconds}s",
+        f"Avg entry: {_money(entry)} → Avg exit: {_money(exit_)}",
+        f"Qty: {_qty_str(qty)}",
+        f"Cost basis: {_money(cost)} · Proceeds (fill): {_money(proceeds)}",
+        f"P/L (realized est.): {pnl_line}",
+    ]
+    return "\n".join(lines)
+
+
+async def _send_alpaca_close_telegram(
+    telegram_cfg: Optional[TelegramConfig],
+    *,
+    internal_symbol: str,
+    alpaca_sym: str,
+    crypto: bool,
+    hold_seconds: int,
+    paper: bool,
+    pnl_summary: Dict[str, Any],
+) -> None:
+    if telegram_cfg is None:
+        return
+    text = _format_alpaca_close_telegram(
+        internal_symbol=internal_symbol,
+        alpaca_sym=alpaca_sym,
+        crypto=crypto,
+        hold_seconds=hold_seconds,
+        paper=paper,
+        pnl_summary=pnl_summary,
+    )
+    ok, err = await send_telegram_message(telegram_cfg, text)
+    if ok:
+        print(f"[Telegram] Alpaca close summary sent for {internal_symbol}", flush=True)
+    elif err:
+        print(f"[Telegram] Alpaca close notify failed: {err}", flush=True)
 
 
 def _order_status_lower(order: Any) -> str:
@@ -316,6 +454,7 @@ async def alpaca_consensus_round_trip(
     side: str,
     *,
     crypto: bool = False,
+    telegram_cfg: Optional[TelegramConfig] = None,
 ) -> Dict[str, Any]:
     """
     Submit a market order aligned with consensus (long=buy notional, short=sell whole shares),
@@ -420,8 +559,19 @@ async def alpaca_consensus_round_trip(
     if close_exc is None:
         out["close"] = close_res
         out["closed"] = True
+        pnl_summary = (close_res or {}).get("pnl_summary") or {}
+        out["close_pnl"] = pnl_summary
         if pending_id:
             await clear_pending_close(config, pending_id)
+        await _send_alpaca_close_telegram(
+            telegram_cfg,
+            internal_symbol=symbol,
+            alpaca_sym=alpaca_sym,
+            crypto=crypto,
+            hold_seconds=hold,
+            paper=config.alpaca_paper,
+            pnl_summary=pnl_summary,
+        )
     else:
         err = _format_alpaca_error(close_exc)
         out["close_error"] = err

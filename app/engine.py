@@ -378,7 +378,13 @@ async def run_analysis(
                     f"close after {config.alpaca_hold_seconds}s (paper={config.alpaca_paper})"
                 )
                 task = asyncio.create_task(
-                    alpaca_consensus_round_trip(config, symbol, aligned, crypto=crypto)
+                    alpaca_consensus_round_trip(
+                        config,
+                        symbol,
+                        aligned,
+                        crypto=crypto,
+                        telegram_cfg=telegram_cfg,
+                    )
                 )
                 alpaca_tasks.append((symbol, task))
                 sym_entry["alpaca"] = {"scheduled": True, "side": aligned}

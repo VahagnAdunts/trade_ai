@@ -6,3 +6,4 @@ outputs/
 outputs_crypto/
 backtest/results/
 .DS_Store
+pending_alpaca_closes.json

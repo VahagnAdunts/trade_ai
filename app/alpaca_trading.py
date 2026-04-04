@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
@@ -208,7 +208,17 @@ async def alpaca_consensus_round_trip(
     """
     Submit a market order aligned with consensus (long=buy notional, short=sell whole shares),
     wait hold_seconds, then close the position for that symbol.
+
+    After a successful open, the scheduled close is recorded in ALPACA_PENDING_CLOSES_FILE
+    so a process restart can still close at the right time (see reconcile_pending_closes_on_startup).
     """
+    from app.alpaca_pending import (
+        clear_pending_close,
+        new_pending_record,
+        register_pending_close,
+        should_clear_stale_pending_no_position,
+    )
+
     hold = config.alpaca_hold_seconds
     dollars = config.alpaca_order_dollars
     alpaca_sym = _alpaca_symbol(symbol)
@@ -222,6 +232,7 @@ async def alpaca_consensus_round_trip(
         "crypto": crypto,
     }
     client = _make_client(config)
+    pending_id: Optional[str] = None
 
     try:
         open_res = await asyncio.to_thread(
@@ -249,6 +260,22 @@ async def alpaca_consensus_round_trip(
                 f"side=short qty={open_res.get('qty')} @ ~${lp_s} (budget ${dollars:g}) "
                 f"paper={config.alpaca_paper}"
             )
+        pending_id, pending_record = new_pending_record(
+            symbol=symbol,
+            hold_seconds=hold,
+            crypto=crypto,
+            side=side,
+            paper=config.alpaca_paper,
+        )
+        try:
+            await register_pending_close(config, pending_record)
+            out["pending_close_id"] = pending_id
+        except Exception as reg_exc:
+            print(
+                f"[Alpaca pending] WARN: could not persist pending close (position still open): "
+                f"{reg_exc}",
+                flush=True,
+            )
     except Exception as exc:
         out["error"] = _format_alpaca_error(exc)
         out["phase"] = "open"
@@ -261,8 +288,13 @@ async def alpaca_consensus_round_trip(
         close_res = await asyncio.to_thread(_close_position, client, symbol)
         out["close"] = close_res
         out["closed"] = True
+        if pending_id:
+            await clear_pending_close(config, pending_id)
     except Exception as exc:
-        out["close_error"] = _format_alpaca_error(exc)
+        err = _format_alpaca_error(exc)
+        out["close_error"] = err
         out["closed"] = False
+        if pending_id and should_clear_stale_pending_no_position(exc, err):
+            await clear_pending_close(config, pending_id)
 
     return out

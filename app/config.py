@@ -162,6 +162,7 @@ class AppConfig:
     alpaca_paper: bool
     alpaca_order_dollars: float
     alpaca_hold_seconds: int
+    alpaca_pending_closes_file: str
     symbols: List[str]
     crypto_symbols: List[str]
     consensus_min_models: int
@@ -193,6 +194,10 @@ class AppConfig:
             os.getenv("ALPACA_HOLD_SECONDS"),
             "ALPACA_HOLD_SECONDS",
             default="3600",
+        )
+        alpaca_pending_closes_file = (
+            (os.getenv("ALPACA_PENDING_CLOSES_FILE") or "").strip()
+            or "pending_alpaca_closes.json"
         )
 
         consensus_min_models = _parse_consensus_min_models(os.getenv("CONSENSUS_MIN_MODELS"))
@@ -227,6 +232,7 @@ class AppConfig:
             alpaca_paper=alpaca_paper,
             alpaca_order_dollars=alpaca_order_dollars,
             alpaca_hold_seconds=alpaca_hold_seconds,
+            alpaca_pending_closes_file=alpaca_pending_closes_file,
             symbols=_parse_symbols(os.getenv("SYMBOLS")),
             crypto_symbols=_parse_crypto_symbols(os.getenv("CRYPTO_SYMBOLS")),
             consensus_min_models=consensus_min_models,

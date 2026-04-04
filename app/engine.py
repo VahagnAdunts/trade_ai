@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Tuple
 
+from app.alpaca_pending import reconcile_pending_closes_on_startup
 from app.alpaca_trading import alpaca_consensus_round_trip, log_alpaca_account_health
 from app.config import AppConfig
 from app.data_provider import TwelveDataClient
@@ -159,6 +160,8 @@ async def run_analysis(
     crypto: bool = False,
 ) -> Path:
     configure_consensus_from_config(config)
+    if config.alpaca_api_key_id and config.alpaca_api_secret_key:
+        await reconcile_pending_closes_on_startup(config)
     provider = TwelveDataClient(api_key=config.stock_data_api_key)
     if out_dir == "outputs" and crypto:
         out_dir = "outputs_crypto"

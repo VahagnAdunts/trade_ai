@@ -9,6 +9,7 @@ import webbrowser
 
 import httpx
 
+from app.alpaca_pending import reconcile_pending_closes_on_startup
 from app.config import AppConfig
 from app.engine import run_analysis
 from app.telegram_notifier import TelegramConfig, send_telegram_message
@@ -61,6 +62,8 @@ async def _run_from_telegram(config: AppConfig, tg: TelegramConfig) -> None:
     print(
         "Telegram runner started. Send /run (equities) or /run_crypto (crypto) to trigger analysis."
     )
+    if config.alpaca_api_key_id and config.alpaca_api_secret_key:
+        await reconcile_pending_closes_on_startup(config)
     await send_telegram_message(
         tg,
         "Tred_ai bot is online.\nCommands: /run, /run_crypto, /status, /help",

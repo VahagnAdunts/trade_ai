@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.config import DEFAULT_TOP100_SP500, AppConfig
+from app.config import AppConfig
 from app.engine import _candles_to_context
 from app.llm_clients import ClaudeAnalyzer, GeminiAnalyzer, GrokAnalyzer, OpenAIAnalyzer
 from app.models import LLMDecision
@@ -641,7 +641,7 @@ async def async_main(args: Any) -> None:
         elif getattr(args, "symbol", None):
             symbols = [args.symbol.upper()]
         else:
-            symbols = list(DEFAULT_TOP100_SP500)
+            symbols = list(config.symbols)
         await run_at_time_snapshot(
             config=config,
             symbols=symbols,

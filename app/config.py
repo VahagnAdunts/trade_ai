@@ -9,138 +9,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-DEFAULT_TOP100_SP500 = [
-    "AAPL",
-    "MSFT",
-    "NVDA",
-    "AMZN",
-    "GOOGL",
-    "META",
-    "BRK.B",
-    "LLY",
-    "AVGO",
-    "TSLA",
-    "JPM",
-    "V",
-    "UNH",
-    "XOM",
-    "MA",
-    "COST",
-    "WMT",
-    "PG",
-    "JNJ",
-    "HD",
-    "ORCL",
-    "BAC",
-    "ABBV",
-    "KO",
-    "MRK",
-    "CVX",
-    "CRM",
-    "NFLX",
-    "TMO",
-    "ACN",
-    "MCD",
-    "CSCO",
-    "PEP",
-    "LIN",
-    "ABT",
-    "AMD",
-    "WFC",
-    "DIS",
-    "ADBE",
-    "TXN",
-    "DHR",
-    "PM",
-    "RTX",
-    "QCOM",
-    "IBM",
-    "CAT",
-    "GE",
-    "SPGI",
-    "BKNG",
-    "GS",
-    "INTU",
-    "AMGN",
-    "LOW",
-    "BLK",
-    "AMAT",
-    "NOW",
-    "ISRG",
-    "HON",
-    "UNP",
-    "SYK",
-    "BA",
-    "NEE",
-    "PGR",
-    "SCHW",
-    "TJX",
-    "ADP",
-    "DE",
-    "MU",
-    "COP",
-    "GILD",
-    "LRCX",
-    "MDT",
-    "MMC",
-    "ELV",
-    "C",
-    "EG",
-    "UBER",
-    "FI",
-    "KLAC",
-    "CB",
-    "SO",
-    "ANET",
-    "PANW",
-    "SNPS",
-    "MO",
-    "APD",
-    "TT",
-    "CME",
-    "CDNS",
-    "UPS",
-    "ICE",
-    "PH",
-    "AON",
-    "EQIX",
-    "EOG",
-    "CMG",
-    "MSI",
-    "ROP",
-    "SHW",
-    "MDLZ",
-]
-
-# Backward compatibility for older imports.
-DEFAULT_TOP10_SP500 = DEFAULT_TOP100_SP500
-DEFAULT_TOP25_SP500 = DEFAULT_TOP100_SP500[:25]
-
-# Twelve Data format (USD pairs). Override with CRYPTO_SYMBOLS in .env.
-DEFAULT_TOP20_CRYPTO = [
-    "BTC/USD",
-    "ETH/USD",
-    "SOL/USD",
-    "XRP/USD",
-    "DOGE/USD",
-    "ADA/USD",
-    "AVAX/USD",
-    "LINK/USD",
-    "DOT/USD",
-    "SHIB/USD",
-    "LTC/USD",
-    "BCH/USD",
-    "ATOM/USD",
-    "UNI/USD",
-    "ETC/USD",
-    "NEAR/USD",
-    "APT/USD",
-    "FIL/USD",
-    "INJ/USD",
-    "ARB/USD",
-]
-
-
 @dataclass(frozen=True)
 class AppConfig:
     stock_data_api_key: str
@@ -171,12 +39,16 @@ class AppConfig:
 
     @staticmethod
     def from_env() -> "AppConfig":
-        telegram_enabled = _parse_bool(os.getenv("TELEGRAM_ENABLED", "false"))
+        telegram_enabled = _parse_bool(_required("TELEGRAM_ENABLED"))
         telegram_bot_token = _parse_optional_str(os.getenv("TELEGRAM_BOT_TOKEN"))
         telegram_chat_id = _parse_optional_str(os.getenv("TELEGRAM_CHAT_ID"))
+        if telegram_enabled and (not telegram_bot_token or not telegram_chat_id):
+            raise ValueError(
+                "TELEGRAM_ENABLED=true requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"
+            )
         telegram_enabled = bool(telegram_enabled and telegram_bot_token and telegram_chat_id)
 
-        alpaca_enabled = _parse_bool(os.getenv("ALPACA_ENABLED", "false"))
+        alpaca_enabled = _parse_bool(_required("ALPACA_ENABLED"))
         alpaca_api_key_id = _parse_optional_str(os.getenv("ALPACA_API_KEY_ID"))
         alpaca_api_secret_key = _parse_optional_str(os.getenv("ALPACA_API_SECRET_KEY"))
         if alpaca_enabled and (not alpaca_api_key_id or not alpaca_api_secret_key):
@@ -184,32 +56,25 @@ class AppConfig:
                 "ALPACA_ENABLED=true requires ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY"
             )
 
-        alpaca_paper = _parse_bool(os.getenv("ALPACA_PAPER", "true"))
+        alpaca_paper = _parse_bool(_required("ALPACA_PAPER"))
         alpaca_order_dollars = _parse_positive_float(
             os.getenv("ALPACA_ORDER_DOLLARS"),
             "ALPACA_ORDER_DOLLARS",
-            default="500",
         )
         alpaca_hold_seconds = _parse_positive_int_env(
             os.getenv("ALPACA_HOLD_SECONDS"),
             "ALPACA_HOLD_SECONDS",
-            default="3600",
         )
-        alpaca_pending_closes_file = (
-            (os.getenv("ALPACA_PENDING_CLOSES_FILE") or "").strip()
-            or "pending_alpaca_closes.json"
-        )
+        alpaca_pending_closes_file = _required("ALPACA_PENDING_CLOSES_FILE")
 
         consensus_min_models = _parse_consensus_min_models(os.getenv("CONSENSUS_MIN_MODELS"))
         consensus_min_confidence_pct = _parse_confidence_pct(
             os.getenv("CONSENSUS_MIN_CONFIDENCE_PERCENT"),
             "CONSENSUS_MIN_CONFIDENCE_PERCENT",
-            default="60",
         )
         consensus_min_confidence_crypto_pct = _parse_confidence_pct(
             os.getenv("CONSENSUS_MIN_CONFIDENCE_CRYPTO_PERCENT"),
             "CONSENSUS_MIN_CONFIDENCE_CRYPTO_PERCENT",
-            default="70",
         )
 
         return AppConfig(
@@ -218,11 +83,11 @@ class AppConfig:
             google_api_key=_required("GOOGLE_API_KEY"),
             anthropic_api_key=_required("ANTHROPIC_API_KEY"),
             xai_api_key=_required("XAI_API_KEY"),
-            openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1"),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
-            claude_model=os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-latest"),
-            grok_model=os.getenv("GROK_MODEL", "grok-beta"),
-            context_mode=_parse_context_mode(os.getenv("CONTEXT_MODE", "hybrid")),
+            openai_model=_required("OPENAI_MODEL"),
+            gemini_model=_required("GEMINI_MODEL"),
+            claude_model=_required("CLAUDE_MODEL"),
+            grok_model=_required("GROK_MODEL"),
+            context_mode=_parse_context_mode(_required("CONTEXT_MODE")),
             telegram_enabled=telegram_enabled,
             telegram_bot_token=telegram_bot_token,
             telegram_chat_id=telegram_chat_id,
@@ -242,26 +107,36 @@ class AppConfig:
 
 
 def _required(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise ValueError(f"Missing environment variable: {name}")
-    return value
+    value = os.getenv(name)
+    if value is None or not str(value).strip():
+        raise ValueError(f"Missing or empty environment variable: {name}")
+    return str(value).strip()
 
 
 def _parse_symbols(raw: str | None) -> List[str]:
-    if not raw:
-        return DEFAULT_TOP100_SP500
-    return [x.strip().upper() for x in raw.split(",") if x.strip()]
+    if raw is None or not str(raw).strip():
+        raise ValueError(
+            "SYMBOLS must be set in .env with a comma-separated list of equity tickers"
+        )
+    xs = [x.strip().upper() for x in str(raw).split(",") if x.strip()]
+    if not xs:
+        raise ValueError("SYMBOLS must contain at least one ticker")
+    return xs
 
 
 def _parse_crypto_symbols(raw: str | None) -> List[str]:
-    if not raw:
-        return list(DEFAULT_TOP20_CRYPTO)
-    return [x.strip().upper() for x in raw.split(",") if x.strip()]
+    if raw is None or not str(raw).strip():
+        raise ValueError(
+            "CRYPTO_SYMBOLS must be set in .env with a comma-separated list of pairs (e.g. BTC/USD)"
+        )
+    xs = [x.strip().upper() for x in str(raw).split(",") if x.strip()]
+    if not xs:
+        raise ValueError("CRYPTO_SYMBOLS must contain at least one pair")
+    return xs
 
 
 def _parse_context_mode(raw: str) -> str:
-    mode = (raw or "hybrid").strip().lower()
+    mode = raw.strip().lower()
     allowed = {"raw", "hybrid", "features"}
     if mode not in allowed:
         raise ValueError(f"Invalid CONTEXT_MODE={raw!r}. Allowed: raw, hybrid, features")
@@ -274,33 +149,47 @@ def _parse_optional_str(raw: str | None) -> Optional[str]:
 
 
 def _parse_bool(raw: str) -> bool:
-    v = (raw or "").strip().lower()
-    return v in {"1", "true", "yes", "y", "on"}
+    v = raw.strip().lower()
+    if v in {"1", "true", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(
+        f"Boolean env must be true/false (or 1/0, yes/no, on/off): got {raw!r}"
+    )
 
 
-def _parse_positive_float(raw: str | None, label: str, *, default: str) -> float:
-    v = float((raw or default).strip())
+def _parse_positive_float(raw: str | None, label: str) -> float:
+    if raw is None or not str(raw).strip():
+        raise ValueError(f"Missing or empty environment variable: {label}")
+    v = float(str(raw).strip())
     if v <= 0:
         raise ValueError(f"{label} must be positive")
     return v
 
 
-def _parse_positive_int_env(raw: str | None, label: str, *, default: str) -> int:
-    v = int((raw or default).strip())
+def _parse_positive_int_env(raw: str | None, label: str) -> int:
+    if raw is None or not str(raw).strip():
+        raise ValueError(f"Missing or empty environment variable: {label}")
+    v = int(str(raw).strip())
     if v <= 0:
         raise ValueError(f"{label} must be positive")
     return v
 
 
 def _parse_consensus_min_models(raw: str | None) -> int:
-    v = int((raw or "3").strip())
+    if raw is None or not str(raw).strip():
+        raise ValueError("Missing or empty environment variable: CONSENSUS_MIN_MODELS")
+    v = int(str(raw).strip())
     if not 1 <= v <= 4:
         raise ValueError("CONSENSUS_MIN_MODELS must be between 1 and 4 (four LLMs)")
     return v
 
 
-def _parse_confidence_pct(raw: str | None, label: str, *, default: str) -> int:
-    v = int((raw or default).strip())
+def _parse_confidence_pct(raw: str | None, label: str) -> int:
+    if raw is None or not str(raw).strip():
+        raise ValueError(f"Missing or empty environment variable: {label}")
+    v = int(str(raw).strip())
     if not 0 <= v <= 100:
         raise ValueError(f"{label} must be between 0 and 100")
     return v

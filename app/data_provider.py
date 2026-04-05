@@ -58,6 +58,8 @@ class TwelveDataClient:
         if not rows:
             raise ValueError(f"No data returned for {symbol}")
 
+        # Note: Twelve Data often returns volume=0 on free tier for many equities; see
+        # feature_snapshot.data_quality in build_feature_context (warnings for LLMs + console).
         points: List[OHLCVPoint] = []
         for item in rows:
             dt = datetime.fromisoformat(item["datetime"]).replace(tzinfo=timezone.utc)

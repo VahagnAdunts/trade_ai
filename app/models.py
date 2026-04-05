@@ -38,7 +38,10 @@ class LLMDecision(BaseModel):
         le=100,
         description="1h short favorability.",
     )
-    rationale: str = ""
+    rationale: str = Field(
+        default="",
+        description="Chain-of-thought from the model (thinking field); not used for scoring.",
+    )
     horizon: str = "hourly"
 
     @field_validator("horizon")

@@ -10,6 +10,9 @@ from openai import OpenAI
 
 from app.models import LLMDecision
 
+# Cap stored rationale (from "thinking") to keep reports and payloads bounded.
+_MAX_THINKING_CHARS = 8000
+
 
 SYSTEM_PROMPT_CRYPTO = """
 You are a trading signal model for a very short intraday strategy on CRYPTOCURRENCY (USD-quoted pairs).
@@ -36,8 +39,13 @@ You must score BOTH options independently (0–100 each):
 The downstream system will choose long if long_confidence >= short_confidence, else short. Ties favor long.
 Do NOT output a single "action" only — always output BOTH numbers.
 
-Return ONLY valid JSON with:
+Reasoning (critical for quality):
+- First reason step-by-step in the "thinking" string (indicators, regime, conflicts, uncertainty).
+- Then set long_confidence and short_confidence to match that reasoning. Scores must be consistent with thinking.
+
+Return ONLY valid JSON with exactly these keys:
 {
+  "thinking": "<brief chain-of-thought: what you observe and why before scoring>",
   "long_confidence": <integer 0-100>,
   "short_confidence": <integer 0-100>,
   "horizon": "hourly"
@@ -45,12 +53,11 @@ Return ONLY valid JSON with:
 
 Output rules (critical):
 - Your entire message must be nothing but that JSON object (optionally wrapped in a ```json code block).
-- Do not write analysis, markdown headings, bullet lists, or any text before or after the JSON.
-- Reply with JSON only — any prose will break parsing.
+- Do not put any text outside the JSON object (no markdown headings or preamble).
+- All prose belongs inside the "thinking" string.
 
 Rules:
-- Both integers are required. They need not sum to 100; they are separate strength estimates.
-- Do not output rationale or prose beyond the JSON.
+- "thinking" is required (2–8 sentences). Both integers are required. They need not sum to 100.
 - Stay focused on hourly position logic only; ignore longer-term bias unless it clearly affects the next hour.
 - Think only about the next one-hour bar: open now, close after one hour.
 - Use only the provided data.
@@ -81,8 +88,13 @@ You must score BOTH options independently (0–100 each):
 The downstream system will choose long if long_confidence >= short_confidence, else short. Ties favor long.
 Do NOT output a single "action" only — always output BOTH numbers.
 
-Return ONLY valid JSON with:
+Reasoning (critical for quality):
+- First reason step-by-step in the "thinking" string (indicators, regime, conflicts, uncertainty).
+- Then set long_confidence and short_confidence to match that reasoning. Scores must be consistent with thinking.
+
+Return ONLY valid JSON with exactly these keys:
 {
+  "thinking": "<brief chain-of-thought: what you observe and why before scoring>",
   "long_confidence": <integer 0-100>,
   "short_confidence": <integer 0-100>,
   "horizon": "hourly"
@@ -90,12 +102,11 @@ Return ONLY valid JSON with:
 
 Output rules (critical):
 - Your entire message must be nothing but that JSON object (optionally wrapped in a ```json code block).
-- Do not write analysis, markdown headings, bullet lists, or any text before or after the JSON.
-- Reply with JSON only — any prose will break parsing.
+- Do not put any text outside the JSON object (no markdown headings or preamble).
+- All prose belongs inside the "thinking" string.
 
 Rules:
-- Both integers are required. They need not sum to 100; they are separate strength estimates.
-- Do not output rationale or prose beyond the JSON.
+- "thinking" is required (2–8 sentences). Both integers are required. They need not sum to 100.
 - Stay focused on hourly position logic only; ignore longer-term bias unless it clearly affects the next hour.
 - Think only about the next one-hour bar: open now, close after one hour.
 - Use only the provided data.
@@ -116,10 +127,27 @@ def _coerce_decision(model: str, symbol: str, raw_text: str) -> LLMDecision:
     return _llm_decision_from_json(model, symbol, data)
 
 
+def _thinking_to_rationale(data: dict) -> str:
+    """Map scratchpad-style keys to a single stored rationale (not fed back to the model)."""
+    raw = (
+        data.get("thinking")
+        or data.get("reasoning")
+        or data.get("scratchpad")
+        or data.get("chain_of_thought")
+    )
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if len(text) > _MAX_THINKING_CHARS:
+        return text[: _MAX_THINKING_CHARS] + "…"
+    return text
+
+
 def _llm_decision_from_json(model: str, symbol: str, data: dict) -> LLMDecision:
     lc = data.get("long_confidence", data.get("longConfidence"))
     sc = data.get("short_confidence", data.get("shortConfidence"))
     horizon = str(data.get("horizon", "hourly")).strip()
+    rationale = _thinking_to_rationale(data)
 
     if lc is None or sc is None:
         raise ValueError(
@@ -131,6 +159,7 @@ def _llm_decision_from_json(model: str, symbol: str, data: dict) -> LLMDecision:
         long_confidence=int(lc),
         short_confidence=int(sc),
         horizon=horizon,
+        rationale=rationale,
     )
 
 
@@ -167,22 +196,15 @@ def _parse_json_object(raw_text: str) -> dict:
     raise ValueError(f"Unable to parse JSON from model output. Preview: {preview}")
 
 
-def _is_model_not_found(err: Exception) -> bool:
-    text = str(err).lower()
-    return "model not found" in text or "not found" in text or "404" in text
-
-
 class OpenAIAnalyzer:
     def __init__(self, api_key: str, model_name: str) -> None:
         self.model_name = model_name
         self.client = OpenAI(api_key=api_key)
-        self.fallback_models = ["gpt-4o-mini"]
 
     def analyze(self, symbol: str, market_context: str, *, crypto: bool = False) -> LLMDecision:
         sys_prompt = SYSTEM_PROMPT_CRYPTO if crypto else SYSTEM_PROMPT
-        model_candidates = [self.model_name] + self.fallback_models
-        return _run_with_model_fallback(
-            model_candidates=model_candidates,
+        return _run_configured_model(
+            model_candidates=[self.model_name],
             run_call=lambda model: self.client.responses.create(
                 model=model,
                 input=[
@@ -203,13 +225,11 @@ class GeminiAnalyzer:
     def __init__(self, api_key: str, model_name: str) -> None:
         self.model_name = model_name
         genai.configure(api_key=api_key)
-        self.fallback_models = ["gemini-1.5-flash", "gemini-2.0-flash"]
 
     def analyze(self, symbol: str, market_context: str, *, crypto: bool = False) -> LLMDecision:
         sys_prompt = SYSTEM_PROMPT_CRYPTO if crypto else SYSTEM_PROMPT
-        model_candidates = [self.model_name] + self.fallback_models
-        return _run_with_model_fallback(
-            model_candidates=model_candidates,
+        return _run_configured_model(
+            model_candidates=[self.model_name],
             run_call=lambda model: (
                 genai.GenerativeModel(model_name=model)
                 .generate_content(
@@ -228,25 +248,24 @@ class ClaudeAnalyzer:
     def __init__(self, api_key: str, model_name: str) -> None:
         self.model_name = model_name
         self.client = anthropic.Anthropic(api_key=api_key)
-        self.fallback_models = ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"]
 
     def analyze(self, symbol: str, market_context: str, *, crypto: bool = False) -> LLMDecision:
         sys_prompt = SYSTEM_PROMPT_CRYPTO if crypto else SYSTEM_PROMPT
-        model_candidates = [self.model_name] + self.fallback_models
-        return _run_with_model_fallback(
-            model_candidates=model_candidates,
+        return _run_configured_model(
+            model_candidates=[self.model_name],
             run_call=lambda model: "".join(
                 block.text
                 for block in self.client.messages.create(
                     model=model,
-                    max_tokens=800,
+                    max_tokens=2048,
                     system=sys_prompt,
                     messages=[
                         {
                             "role": "user",
                             "content": (
                                 f"Symbol: {symbol}\n\nData:\n{market_context}\n\n"
-                                "Respond with ONLY the JSON object (no analysis, no markdown body)."
+                                "Output a single JSON object only (thinking + scores per system prompt; "
+                                "no text outside the JSON)."
                             ),
                         }
                     ],
@@ -263,13 +282,11 @@ class GrokAnalyzer:
     def __init__(self, api_key: str, model_name: str) -> None:
         self.model_name = model_name
         self.client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
-        self.fallback_models = ["grok-beta"]
 
     def analyze(self, symbol: str, market_context: str, *, crypto: bool = False) -> LLMDecision:
         sys_prompt = SYSTEM_PROMPT_CRYPTO if crypto else SYSTEM_PROMPT
-        model_candidates = [self.model_name] + self.fallback_models
-        return _run_with_model_fallback(
-            model_candidates=model_candidates,
+        return _run_configured_model(
+            model_candidates=[self.model_name],
             run_call=lambda model: self.client.responses.create(
                 model=model,
                 input=[
@@ -286,28 +303,19 @@ class GrokAnalyzer:
         )
 
 
-def _run_with_model_fallback(
+def _run_configured_model(
     model_candidates: List[str],
     run_call: Callable[[str], str],
     provider: str,
     output_model_name: str,
     symbol: str,
 ) -> LLMDecision:
-    errors: List[str] = []
-    tried = set()
-    for model in model_candidates:
-        if model in tried:
-            continue
-        tried.add(model)
-        try:
-            text = run_call(model).strip()
-            return _coerce_decision(output_model_name, symbol, text)
-        except Exception as exc:
-            if _is_model_not_found(exc):
-                errors.append(f"{model}: {exc}")
-                continue
-            raise ValueError(f"{provider} ({model}) failed: {exc}")
-    raise ValueError(
-        f"{provider} failed: no valid model found. Tried {', '.join(tried)}. "
-        f"Errors: {' | '.join(errors)}"
-    )
+    """Calls the API with the configured model id only (from env / AppConfig)."""
+    if not model_candidates or not (model_candidates[0] or "").strip():
+        raise ValueError(f"{provider}: model name is empty; set the matching *_MODEL in .env")
+    model = model_candidates[0].strip()
+    try:
+        text = run_call(model).strip()
+        return _coerce_decision(output_model_name, symbol, text)
+    except Exception as exc:
+        raise ValueError(f"{provider} ({model}) failed: {exc}") from exc

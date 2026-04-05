@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from statistics import mean, pstdev
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -21,7 +22,8 @@ def build_feature_context(symbol: str, points: Sequence[OHLCVPoint]) -> Dict[str
     bb_mid, bb_upper, bb_lower = _bollinger(closes, 20, 2.0)
     atr14 = _atr(highs, lows, closes, 14)
     obv_series = _obv(closes, volumes)
-    vwap = _vwap(points)
+    vwap, vwap_basis, vwap_volume_weighted = _vwap_session(points)
+    dq_volume, dq_warnings = _volume_data_quality(volumes, vwap_volume_weighted=vwap_volume_weighted)
 
     last_close = closes[-1]
     last_volume = volumes[-1]
@@ -36,6 +38,31 @@ def build_feature_context(symbol: str, points: Sequence[OHLCVPoint]) -> Dict[str
     bb_width_pct = ((bb_upper - bb_lower) / bb_mid * 100.0) if bb_mid else 0.0
     sr = _support_resistance(closes, 48)
 
+    ema_1h_20 = _ema(closes, 20)
+    bias_1h = _price_vs_ema_bias(last_close, ema_1h_20)
+
+    bars_4h = _aggregate_to_4h(points)
+    bars_1d = _aggregate_to_daily(points)
+    c4 = [p.close for p in bars_4h]
+    c1d = [p.close for p in bars_1d]
+
+    rsi_4h = _rsi(c4, 14) if c4 else 50.0
+    ema_4h_20 = _ema(c4, 20) if c4 else 0.0
+    last_4h = c4[-1] if c4 else last_close
+    bias_4h = _price_vs_ema_bias(last_4h, ema_4h_20)
+    trend_4h = _bias_to_trend(bias_4h)
+
+    rsi_1d = _rsi(c1d, 14) if c1d else 50.0
+    ema_1d_20 = _ema(c1d, 20) if c1d else 0.0
+    last_1d = c1d[-1] if c1d else last_close
+    bias_1d = _price_vs_ema_bias(last_1d, ema_1d_20)
+    trend_1d = _bias_to_trend(bias_1d)
+
+    tf_align = {
+        "1h_4h_agree": _tf_biases_agree(bias_1h, bias_4h),
+        "1h_1d_agree": _tf_biases_agree(bias_1h, bias_1d),
+    }
+
     features: Dict[str, Any] = {
         "symbol": symbol,
         "timeframe": "1h",
@@ -43,12 +70,13 @@ def build_feature_context(symbol: str, points: Sequence[OHLCVPoint]) -> Dict[str
         "as_of_utc": points[-1].datetime.isoformat(),
         "price": {
             "last_close": _r(last_close),
-            "ema_20": _r(_ema(closes, 20)),
+            "ema_20": _r(ema_1h_20),
             "ema_50": _r(_ema(closes, 50)),
-            "dist_to_ema20_pct": _r(_dist_pct(last_close, _ema(closes, 20))),
+            "dist_to_ema20_pct": _r(_dist_pct(last_close, ema_1h_20)),
             "dist_to_ema50_pct": _r(_dist_pct(last_close, _ema(closes, 50))),
             "vwap": _r(vwap),
             "vwap_deviation_pct": _r(_dist_pct(last_close, vwap)),
+            "vwap_basis": vwap_basis,
         },
         "momentum": {
             "rsi_14": _r(rsi14),
@@ -81,6 +109,27 @@ def build_feature_context(symbol: str, points: Sequence[OHLCVPoint]) -> Dict[str
             "near_breakout_up": _near_breakout(last_close, sr[1]),
             "near_breakout_down": _near_breakout(sr[0], last_close),
         },
+        "data_quality": {
+            "volume": dq_volume,
+            "warnings": dq_warnings,
+        },
+        "timeframe_4h": {
+            "bars": len(bars_4h),
+            "rsi_14": _r(rsi_4h),
+            "ema_20": _r(ema_4h_20),
+            "last_close": _r(last_4h),
+            "dist_to_ema20_pct": _r(_dist_pct(last_4h, ema_4h_20)),
+            "trend": trend_4h,
+        },
+        "timeframe_1d": {
+            "bars": len(bars_1d),
+            "rsi_14": _r(rsi_1d),
+            "ema_20": _r(ema_1d_20),
+            "last_close": _r(last_1d),
+            "dist_to_ema20_pct": _r(_dist_pct(last_1d, ema_1d_20)),
+            "trend": trend_1d,
+        },
+        "tf_alignment": tf_align,
     }
 
     return features
@@ -100,6 +149,83 @@ def recent_bars_snapshot(points: Sequence[OHLCVPoint], count: int = 16) -> List[
             }
         )
     return snap
+
+
+def _aggregate_to_4h(points: Sequence[OHLCVPoint]) -> List[OHLCVPoint]:
+    """Collapse consecutive 4×1h bars into one 4h OHLCV bar (aligned from series start)."""
+    out: List[OHLCVPoint] = []
+    for i in range(0, len(points), 4):
+        chunk = points[i : i + 4]
+        if not chunk:
+            continue
+        last = chunk[-1]
+        o = chunk[0].open
+        h = max(p.high for p in chunk)
+        l = min(p.low for p in chunk)
+        c = last.close
+        v = sum(max(float(p.volume), 0.0) for p in chunk)
+        out.append(
+            OHLCVPoint(
+                datetime=last.datetime,
+                open=o,
+                high=h,
+                low=l,
+                close=c,
+                volume=v,
+            )
+        )
+    return out
+
+
+def _aggregate_to_daily(points: Sequence[OHLCVPoint]) -> List[OHLCVPoint]:
+    """One OHLCV bar per calendar day (UTC date of bar timestamp)."""
+    by_day: Dict[str, List[OHLCVPoint]] = defaultdict(list)
+    for p in points:
+        by_day[p.datetime.date().isoformat()].append(p)
+    out: List[OHLCVPoint] = []
+    for day in sorted(by_day.keys()):
+        chunk = sorted(by_day[day], key=lambda x: x.datetime)
+        last = chunk[-1]
+        o = chunk[0].open
+        h = max(p.high for p in chunk)
+        l = min(p.low for p in chunk)
+        c = last.close
+        v = sum(max(float(p.volume), 0.0) for p in chunk)
+        out.append(
+            OHLCVPoint(
+                datetime=last.datetime,
+                open=o,
+                high=h,
+                low=l,
+                close=c,
+                volume=v,
+            )
+        )
+    return out
+
+
+def _price_vs_ema_bias(close: float, ema: float) -> int:
+    """+1 price above EMA, -1 below, 0 neutral or invalid."""
+    if ema <= 0 or close <= 0:
+        return 0
+    if close > ema:
+        return 1
+    if close < ema:
+        return -1
+    return 0
+
+
+def _bias_to_trend(bias: int) -> str:
+    if bias > 0:
+        return "bullish"
+    if bias < 0:
+        return "bearish"
+    return "neutral"
+
+
+def _tf_biases_agree(b1: int, b2: int) -> bool:
+    """True when directional bias vs EMA20 matches (including both neutral)."""
+    return b1 == b2
 
 
 def _ret_pct(closes: Sequence[float], lookback: int) -> float:
@@ -203,15 +329,102 @@ def _obv(closes: Sequence[float], volumes: Sequence[float]) -> List[float]:
     return out
 
 
-def _vwap(points: Sequence[OHLCVPoint]) -> float:
+def _nonzero_fraction(values: Sequence[float]) -> float:
+    if not values:
+        return 0.0
+    return sum(1 for v in values if v > 0) / len(values)
+
+
+def _volume_data_quality(
+    volumes: Sequence[float],
+    *,
+    vwap_volume_weighted: bool,
+) -> Tuple[Dict[str, Any], List[str]]:
+    """
+    Twelve Data (especially free tier) often returns volume=0 for many symbols.
+    Surfaces explicit warnings so volume-derived features are not interpreted blindly.
+    """
+    n = len(volumes)
+    warnings: List[str] = []
+
+    last24 = volumes[-24:] if n >= 24 else list(volumes)
+    last72 = volumes[-72:] if n >= 72 else list(volumes)
+
+    nz_full = _nonzero_fraction(volumes)
+    nz_72 = _nonzero_fraction(last72)
+    nz_24 = _nonzero_fraction(last24)
+
+    if n >= 1 and nz_24 == 0.0:
+        warnings.append(
+            "Volume is zero on all of the last 24 hourly bars — OBV is flat, volume z-score is 0, "
+            "and VWAP is not true volume-weighted price (common on Twelve Data free tier for some tickers)."
+        )
+    elif not vwap_volume_weighted:
+        warnings.append(
+            "VWAP is not volume-weighted in the session window (total volume is zero); "
+            "vwap/vwap_deviation_pct use typical price of the last bar in that window, not true VWAP."
+        )
+
+    if n >= 24 and nz_24 > 0.0 and nz_72 < 0.15:
+        warnings.append(
+            f"Only ~{nz_72 * 100:.0f}% of the last 72 bars have nonzero volume — OBV, volume z-score, "
+            "and VWAP are weakly informative; prefer price/volatility indicators."
+        )
+    elif nz_full < 0.25 and nz_24 > 0.0:
+        warnings.append(
+            f"Only ~{nz_full * 100:.0f}% of bars in this series have nonzero volume — treat volume metrics with caution."
+        )
+
+    trusted = (
+        vwap_volume_weighted
+        and nz_72 >= 0.20
+        and nz_24 > 0.0
+        and nz_full >= 0.15
+    )
+
+    meta: Dict[str, Any] = {
+        "nonzero_fraction_full_series": round(nz_full, 4),
+        "nonzero_fraction_last_72_bars": round(nz_72, 4),
+        "nonzero_fraction_last_24_bars": round(nz_24, 4),
+        "vwap_volume_weighted": vwap_volume_weighted,
+        "volume_features_trusted": trusted,
+    }
+    return meta, warnings
+
+
+def _vwap_session(points: Sequence[OHLCVPoint]) -> Tuple[float, str, bool]:
+    """
+    Session VWAP: volume-weighted typical price for the current session only.
+
+    Session = all bars whose calendar date matches the latest bar (typical for hourly
+    data: intraday session for stocks; for 24h crypto, "today" in the bar timestamps' calendar day).
+
+    If no bars match (edge case), falls back to the last 24 hourly bars.
+    Returns (vwap, basis_label, volume_weighted) where volume_weighted is False if sum(volume)==0
+    (caller must not treat VWAP as true VWAP in that case).
+    """
+    if not points:
+        return 0.0, "none", False
+    last = points[-1]
+    day = last.datetime.date()
+    session = [p for p in points if p.datetime.date() == day]
+    basis = "session_day"
+    if not session:
+        session = list(points[-24:]) if len(points) >= 24 else list(points)
+        basis = "last_24h_fallback"
+
     numer = 0.0
     denom = 0.0
-    for p in points:
+    for p in session:
         typical = (p.high + p.low + p.close) / 3.0
         vol = max(float(p.volume), 0.0)
         numer += typical * vol
         denom += vol
-    return numer / denom if denom else points[-1].close
+    if denom > 0:
+        return numer / denom, basis, True
+    # No volume in window: use typical of the last bar in the window
+    p = session[-1]
+    return (p.high + p.low + p.close) / 3.0, basis, False
 
 
 def _zscore(values: Sequence[float], current: float, lookback: int) -> float:

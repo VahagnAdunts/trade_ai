@@ -37,6 +37,8 @@ def _candles_to_context(
         return body
 
     features = build_feature_context(symbol, points)
+    for w in features.get("data_quality", {}).get("warnings", []):
+        print(f"[{symbol}] Data quality: {w}", flush=True)
     payload = {
         "symbol": symbol,
         "asset_class": "crypto" if crypto else "equity",

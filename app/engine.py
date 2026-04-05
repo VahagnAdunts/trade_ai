@@ -13,12 +13,9 @@ from app.data_provider import TwelveDataClient
 from app.features import build_feature_context, recent_bars_snapshot
 from app.llm_clients import ClaudeAnalyzer, GeminiAnalyzer, GrokAnalyzer, OpenAIAnalyzer
 from app.regime import build_market_regime_payload, load_regime_cache
+from app.consensus_format import format_consensus_telegram_message
 from app.telegram_notifier import TelegramConfig, send_telegram_message
-from app.models import (
-    ConsensusResult,
-    LLMDecision,
-    configure_consensus_from_config,
-)
+from app.models import ConsensusResult, LLMDecision
 
 
 def _candles_to_context(
@@ -74,18 +71,7 @@ def _print_data_summary(symbol: str, points: list) -> None:
     )
 
 
-def _print_model_result(decision: LLMDecision, config: AppConfig) -> None:
-    if decision.crypto_mode:
-        bar = (
-            "≥ entry bar"
-            if decision.long_confidence >= config.consensus_min_confidence_crypto_pct
-            else "below entry bar"
-        )
-        print(
-            f"[{decision.symbol}] {decision.model.upper()} -> "
-            f"long worthiness {decision.long_confidence}% ({bar})"
-        )
-        return
+def _print_model_result(decision: LLMDecision) -> None:
     print(
         f"[{decision.symbol}] {decision.model.upper()} -> "
         f"L{decision.long_confidence}% S{decision.short_confidence}% "
@@ -105,16 +91,29 @@ def _print_consensus(symbol: str, consensus: dict) -> None:
     )
 
 
-def _consensus(symbol: str, decisions: Iterable[LLMDecision], config: AppConfig) -> ConsensusResult:
+def _consensus(
+    symbol: str,
+    decisions: Iterable[LLMDecision],
+    config: AppConfig,
+    *,
+    min_confidence_pct: Optional[int] = None,
+) -> ConsensusResult:
     decisions = list(decisions)
-    min_conf = config.consensus_min_confidence_pct
+    min_conf = (
+        min_confidence_pct
+        if min_confidence_pct is not None
+        else config.consensus_min_confidence_pct
+    )
     min_models = config.consensus_min_models
     qualified = {"long": [], "short": []}
     for d in decisions:
         if d.confidence >= min_conf and d.action in qualified:
             qualified[d.action].append(d)
 
-    chosen_side = max(qualified.keys(), key=lambda side: len(qualified[side]))
+    chosen_side = max(
+        ("long", "short"),
+        key=lambda s: (len(qualified[s]), 1 if s == "long" else 0),
+    )
     supporters = qualified[chosen_side]
     passes = len(supporters) >= min_models
     min_conf = min((d.confidence for d in supporters), default=0)
@@ -122,25 +121,6 @@ def _consensus(symbol: str, decisions: Iterable[LLMDecision], config: AppConfig)
     return ConsensusResult(
         symbol=symbol,
         aligned_action=chosen_side if passes else None,
-        minimum_confidence=min_conf,
-        passes_threshold=passes,
-        model_count=len(decisions),
-    )
-
-
-def _consensus_crypto(
-    symbol: str, decisions: Iterable[LLMDecision], config: AppConfig
-) -> ConsensusResult:
-    """Spot crypto: models only score long worthiness; consensus = enough models above threshold."""
-    decisions = list(decisions)
-    min_crypto = config.consensus_min_confidence_crypto_pct
-    min_models = config.consensus_min_models
-    supporters = [d for d in decisions if d.long_confidence >= min_crypto]
-    passes = len(supporters) >= min_models
-    min_conf = min((d.long_confidence for d in supporters), default=0)
-    return ConsensusResult(
-        symbol=symbol,
-        aligned_action="long" if passes else None,
         minimum_confidence=min_conf,
         passes_threshold=passes,
         model_count=len(decisions),
@@ -159,7 +139,6 @@ async def run_analysis(
     *,
     crypto: bool = False,
 ) -> Path:
-    configure_consensus_from_config(config)
     if config.alpaca_api_key_id and config.alpaca_api_secret_key:
         await reconcile_pending_closes_on_startup(config)
     provider = TwelveDataClient(api_key=config.stock_data_api_key)
@@ -189,8 +168,8 @@ async def run_analysis(
         "context_mode": config.context_mode,
         "consensus_rule": (
             (
-                f">= {config.consensus_min_models} of 4 models with long_confidence >= "
-                f"{config.consensus_min_confidence_crypto_pct} (spot crypto long-entry only)"
+                f">= {config.consensus_min_models} of 4 models agree on long vs short "
+                f"with winning confidence >= {config.consensus_min_confidence_crypto_pct} (crypto)"
             )
             if crypto
             else (
@@ -262,6 +241,7 @@ async def run_analysis(
 
         decisions: List[dict] = []
         parsed: List[LLMDecision] = []
+        per_model: dict[str, dict] = {}
 
         async def _run_one(label: str, analyzer) -> tuple:
             try:
@@ -282,9 +262,10 @@ async def run_analysis(
                 _print_model_error(symbol, err)
                 # Do not fabricate confidence scores — only record which model failed and why.
                 row = {
-                    "model": label,
+                    "model_label": label,
                     "error": str(err),
                 }
+                per_model[label] = {"error": str(err)}
                 decisions.append(row)
                 _emit(
                     on_event,
@@ -299,8 +280,11 @@ async def run_analysis(
                 continue
             assert result is not None
             parsed.append(result)
-            _print_model_result(result, config)
-            decisions.append(result.model_dump())
+            _print_model_result(result)
+            d = result.model_dump()
+            d["model_label"] = label
+            per_model[label] = d
+            decisions.append(d)
             _emit(
                 on_event,
                 {
@@ -313,10 +297,13 @@ async def run_analysis(
             )
 
         if parsed:
-            consensus = (
-                _consensus_crypto(symbol, parsed, config)
+            min_pct = (
+                config.consensus_min_confidence_crypto_pct
                 if crypto
-                else _consensus(symbol, parsed, config)
+                else config.consensus_min_confidence_pct
+            )
+            consensus = _consensus(
+                symbol, parsed, config, min_confidence_pct=min_pct
             ).model_dump()
         else:
             consensus = ConsensusResult(
@@ -333,12 +320,15 @@ async def run_analysis(
         telegram_sent = False
         telegram_error: Optional[str] = None
         if consensus.get("passes_threshold"):
-            aligned = consensus.get("aligned_action")
-            min_conf = consensus.get("minimum_confidence")
-            tag = "[CRYPTO] " if crypto else ""
             telegram_text = (
-                f"{tag}CONSENSUS: {symbol} -> {str(aligned).upper()} "
-                f"(min confidence {min_conf}%) | context={config.context_mode}"
+                format_consensus_telegram_message(
+                    symbol,
+                    consensus,
+                    per_model,
+                    crypto=crypto,
+                    manual_execution_note=crypto,
+                )
+                + f"\ncontext={config.context_mode}"
             )
             telegram_sent, telegram_error = await send_telegram_message(
                 telegram_cfg,
@@ -358,36 +348,24 @@ async def run_analysis(
             "telegram_error": telegram_error,
         }
 
-        if consensus.get("passes_threshold") and config.alpaca_enabled:
+        if consensus.get("passes_threshold") and config.alpaca_enabled and not crypto:
             aligned = consensus.get("aligned_action")
             assert aligned in ("long", "short")
-            if crypto and aligned == "short":
-                skip_msg = (
-                    "Alpaca spot crypto cannot open a short from a flat position (no borrow). "
-                    "Consensus short is not executed."
+            print(
+                f"[{symbol}] ALPACA: scheduling {aligned.upper()} market order, "
+                f"close after {config.alpaca_hold_seconds}s (paper={config.alpaca_paper})"
+            )
+            task = asyncio.create_task(
+                alpaca_consensus_round_trip(
+                    config,
+                    symbol,
+                    aligned,
+                    crypto=False,
+                    telegram_cfg=telegram_cfg,
                 )
-                print(f"[{symbol}] ALPACA: skipped SHORT — {skip_msg}")
-                sym_entry["alpaca"] = {
-                    "skipped": True,
-                    "reason": "crypto_spot_no_short",
-                    "message": skip_msg,
-                }
-            else:
-                print(
-                    f"[{symbol}] ALPACA: scheduling {aligned.upper()} market order, "
-                    f"close after {config.alpaca_hold_seconds}s (paper={config.alpaca_paper})"
-                )
-                task = asyncio.create_task(
-                    alpaca_consensus_round_trip(
-                        config,
-                        symbol,
-                        aligned,
-                        crypto=crypto,
-                        telegram_cfg=telegram_cfg,
-                    )
-                )
-                alpaca_tasks.append((symbol, task))
-                sym_entry["alpaca"] = {"scheduled": True, "side": aligned}
+            )
+            alpaca_tasks.append((symbol, task))
+            sym_entry["alpaca"] = {"scheduled": True, "side": aligned}
 
         full_report["symbols"][symbol] = sym_entry
 

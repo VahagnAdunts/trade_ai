@@ -15,36 +15,6 @@ from app.engine import run_analysis
 from app.telegram_notifier import TelegramConfig, send_telegram_message
 
 
-def _format_consensus_message(
-    symbol: str, consensus: dict, per_model: dict, *, crypto: bool = False
-) -> str:
-    action = str(consensus.get("aligned_action") or "none").upper()
-    min_conf = consensus.get("minimum_confidence", 0)
-    tag = "[CRYPTO] " if crypto else ""
-    if crypto:
-        lines = [f"{tag}CONSENSUS ✅ {symbol} LONG entry (min long worthiness {min_conf}%)"]
-        for key in ("chatgpt", "gemini", "claude", "grok"):
-            item = per_model.get(key, {})
-            if item.get("error"):
-                lines.append(f"{key}: ERR")
-                continue
-            lc = item.get("long_confidence", "-")
-            lines.append(f"{key}: long worthiness {lc}%")
-    else:
-        lines = [f"{tag}CONSENSUS ✅ {symbol} {action} (min {min_conf}%)"]
-        for key in ("chatgpt", "gemini", "claude", "grok"):
-            item = per_model.get(key, {})
-            if item.get("error"):
-                lines.append(f"{key}: ERR")
-                continue
-            lc = item.get("long_confidence", "-")
-            sc = item.get("short_confidence", "-")
-            side = str(item.get("action") or item.get("predicted_side") or "?").upper()
-            conf = item.get("confidence", item.get("winning_confidence", "-"))
-            lines.append(f"{key}: L{lc}/S{sc} -> {side} {conf}%")
-    return "\n".join(lines)
-
-
 async def _run_cli(*, crypto: bool = False) -> None:
     config = AppConfig.from_env()
     output_path = await run_analysis(config, crypto=crypto)
@@ -140,39 +110,8 @@ async def _run_from_telegram(config: AppConfig, tg: TelegramConfig) -> None:
             )
             await send_telegram_message(tg, start_msg)
             try:
-                per_symbol: dict = {}
-                pending_msgs: list = []
-
-                def on_event(event: dict) -> None:
-                    ev_type = event.get("type")
-                    symbol = event.get("symbol")
-                    if not symbol:
-                        return
-
-                    if ev_type == "model_result":
-                        bucket = per_symbol.setdefault(symbol, {})
-                        label = event.get("model_label") or "unknown"
-                        if event.get("ok"):
-                            bucket[label] = event.get("decision", {})
-                        else:
-                            bucket[label] = {"error": event.get("error", "error")}
-                        return
-
-                    if ev_type == "consensus":
-                        consensus = event.get("consensus", {})
-                        if not consensus.get("passes_threshold"):
-                            return
-                        msg = _format_consensus_message(
-                            symbol=symbol,
-                            consensus=consensus,
-                            per_model=per_symbol.get(symbol, {}),
-                            crypto=crypto_run,
-                        )
-                        pending_msgs.append(asyncio.create_task(send_telegram_message(tg, msg)))
-
-                output_path = await run_analysis(config, on_event=on_event, crypto=crypto_run)
-                if pending_msgs:
-                    await asyncio.gather(*pending_msgs, return_exceptions=True)
+                # Consensus Telegram alerts are sent from run_analysis (single message per signal).
+                output_path = await run_analysis(config, crypto=crypto_run)
                 report = json.loads(Path(output_path).read_text(encoding="utf-8"))
                 consensus_count = len(report.get("consensus_signals", []))
                 kind = "Crypto" if crypto_run else "Equity"

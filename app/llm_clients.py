@@ -12,7 +12,7 @@ from app.models import LLMDecision
 
 
 SYSTEM_PROMPT_CRYPTO = """
-You are a trading signal model for a very short intraday strategy on CRYPTOCURRENCY (USD spot pairs).
+You are a trading signal model for a very short intraday strategy on CRYPTOCURRENCY (USD-quoted pairs).
 
 Focus strictly on HOURLY positions only: interpret the chart and momentum at the 1-hour timeframe.
 Do not optimize for daily, weekly, or longer horizons—every judgment must be for an hourly position.
@@ -25,27 +25,34 @@ When "market_regime" is present in the JSON, it is real benchmark data (BTC/ETH 
 Use features as primary signal. If recent bars are present, use them as secondary confirmation.
 
 Trading intent (critical):
-- We only evaluate whether opening a LONG for this hour is worthwhile (spot execution does not use shorting).
-- We open a long for exactly one hour, then close it after that hour (no multi-hour holds).
+- We open a directional position for exactly one hour, then close it after that hour (no multi-hour holds).
+- There are only two directional choices for this hour: favor a LONG (price rise over the hour) or a SHORT (price fall over the hour).
+  Execution venue may be spot, margin, or derivatives — the scores only express which direction is more attractive this hour.
 
-You must output ONE score (0–100):
-- long_confidence = how worthwhile / favorable it is to open a 1-hour LONG now (profit if price rises this hour).
-  Low values mean “not worth entering”; high values mean a more attractive long setup for this hour.
+You must score BOTH options independently (0–100 each):
+- long_confidence = how favorable / likely-successful a 1-hour long bias would be (profit if price rises this hour).
+- short_confidence = how favorable / likely-successful a 1-hour short bias would be (profit if price falls this hour).
+
+The downstream system will choose long if long_confidence >= short_confidence, else short. Ties favor long.
+Do NOT output a single "action" only — always output BOTH numbers.
 
 Return ONLY valid JSON with:
 {
   "long_confidence": <integer 0-100>,
+  "short_confidence": <integer 0-100>,
   "horizon": "hourly"
 }
 
 Output rules (critical):
 - Your entire message must be nothing but that JSON object (optionally wrapped in a ```json code block).
 - Do not write analysis, markdown headings, bullet lists, or any text before or after the JSON.
-- If you add any prose, the pipeline will fail — reply with JSON only (first non-whitespace character: open-brace or backtick for a fence).
+- Reply with JSON only — any prose will break parsing.
 
 Rules:
-- Do not output short_confidence, rationale, or any short-trade logic.
-- Stay focused on hourly logic only.
+- Both integers are required. They need not sum to 100; they are separate strength estimates.
+- Do not output rationale or prose beyond the JSON.
+- Stay focused on hourly position logic only; ignore longer-term bias unless it clearly affects the next hour.
+- Think only about the next one-hour bar: open now, close after one hour.
 - Use only the provided data.
 """
 
@@ -104,29 +111,15 @@ class ModelAnalyzer(Protocol):
         ...
 
 
-def _coerce_decision(model: str, symbol: str, raw_text: str, *, crypto: bool = False) -> LLMDecision:
+def _coerce_decision(model: str, symbol: str, raw_text: str) -> LLMDecision:
     data = _parse_json_object(raw_text)
-    return _llm_decision_from_json(model, symbol, data, crypto=crypto)
+    return _llm_decision_from_json(model, symbol, data)
 
 
-def _llm_decision_from_json(
-    model: str, symbol: str, data: dict, *, crypto: bool = False
-) -> LLMDecision:
+def _llm_decision_from_json(model: str, symbol: str, data: dict) -> LLMDecision:
     lc = data.get("long_confidence", data.get("longConfidence"))
     sc = data.get("short_confidence", data.get("shortConfidence"))
     horizon = str(data.get("horizon", "hourly")).strip()
-
-    if crypto:
-        if lc is None:
-            raise ValueError("JSON must include long_confidence (integer 0-100).")
-        return LLMDecision(
-            model=model,
-            symbol=symbol,
-            long_confidence=int(lc),
-            short_confidence=0,
-            horizon=horizon,
-            crypto_mode=True,
-        )
 
     if lc is None or sc is None:
         raise ValueError(
@@ -138,7 +131,6 @@ def _llm_decision_from_json(
         long_confidence=int(lc),
         short_confidence=int(sc),
         horizon=horizon,
-        crypto_mode=False,
     )
 
 
@@ -204,7 +196,6 @@ class OpenAIAnalyzer:
             provider="OpenAI",
             output_model_name="chatgpt",
             symbol=symbol,
-            crypto=crypto,
         )
 
 
@@ -230,7 +221,6 @@ class GeminiAnalyzer:
             provider="Gemini",
             output_model_name="gemini",
             symbol=symbol,
-            crypto=crypto,
         )
 
 
@@ -266,7 +256,6 @@ class ClaudeAnalyzer:
             provider="Claude",
             output_model_name="claude",
             symbol=symbol,
-            crypto=crypto,
         )
 
 
@@ -294,7 +283,6 @@ class GrokAnalyzer:
             provider="Grok",
             output_model_name="grok",
             symbol=symbol,
-            crypto=crypto,
         )
 
 
@@ -304,8 +292,6 @@ def _run_with_model_fallback(
     provider: str,
     output_model_name: str,
     symbol: str,
-    *,
-    crypto: bool = False,
 ) -> LLMDecision:
     errors: List[str] = []
     tried = set()
@@ -315,7 +301,7 @@ def _run_with_model_fallback(
         tried.add(model)
         try:
             text = run_call(model).strip()
-            return _coerce_decision(output_model_name, symbol, text, crypto=crypto)
+            return _coerce_decision(output_model_name, symbol, text)
         except Exception as exc:
             if _is_model_not_found(exc):
                 errors.append(f"{model}: {exc}")

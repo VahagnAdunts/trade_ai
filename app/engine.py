@@ -93,6 +93,16 @@ def _print_consensus(symbol: str, consensus: dict) -> None:
     )
 
 
+# Claude tends to report lower scores than other models; use (base − this) as its bar.
+CLAUDE_CONSENSUS_CONFIDENCE_OFFSET_PCT = 18
+
+
+def _min_confidence_threshold_for_decision(decision: LLMDecision, base_min_pct: int) -> int:
+    if (decision.model or "").strip().lower() == "claude":
+        return max(0, base_min_pct - CLAUDE_CONSENSUS_CONFIDENCE_OFFSET_PCT)
+    return base_min_pct
+
+
 def _consensus(
     symbol: str,
     decisions: Iterable[LLMDecision],
@@ -109,7 +119,8 @@ def _consensus(
     min_models = config.consensus_min_models
     qualified = {"long": [], "short": []}
     for d in decisions:
-        if d.confidence >= min_conf and d.action in qualified:
+        need = _min_confidence_threshold_for_decision(d, min_conf)
+        if d.confidence >= need and d.action in qualified:
             qualified[d.action].append(d)
 
     chosen_side = max(
@@ -171,12 +182,14 @@ async def run_analysis(
         "consensus_rule": (
             (
                 f">= {config.consensus_min_models} of 4 models agree on long vs short "
-                f"with winning confidence >= {config.consensus_min_confidence_crypto_pct} (crypto)"
+                f"with winning confidence >= {config.consensus_min_confidence_crypto_pct} "
+                f"(Claude: >= {max(0, config.consensus_min_confidence_crypto_pct - CLAUDE_CONSENSUS_CONFIDENCE_OFFSET_PCT)}; crypto)"
             )
             if crypto
             else (
                 f">= {config.consensus_min_models} of 4 models agree on long vs short "
-                f"with winning confidence >= {config.consensus_min_confidence_pct}"
+                f"with winning confidence >= {config.consensus_min_confidence_pct} "
+                f"(Claude: >= {max(0, config.consensus_min_confidence_pct - CLAUDE_CONSENSUS_CONFIDENCE_OFFSET_PCT)})"
             )
         ),
         "symbols": {},

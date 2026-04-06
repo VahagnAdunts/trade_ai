@@ -230,20 +230,27 @@ def _position_side_str(pos: Any) -> str:
 
 
 def _build_close_pnl_summary(pos: Any, close_order: Any) -> Dict[str, Any]:
-    """Best-effort P/L: long = proceeds - cost_basis; else prefer Alpaca unrealized_pl."""
+    """
+    Realized round-trip P/L when close fill is known: long → proceeds − cost_basis.
+    If filled_avg_price / filled_qty are missing (order not filled yet), do not infer
+    P/L as −cost_basis (that was the bogus −$500 case).
+    """
     u = _safe_float(getattr(pos, "unrealized_pl", None))
     cost = _safe_float(getattr(pos, "cost_basis", None))
     fq = _safe_float(getattr(close_order, "filled_qty", None)) or 0.0
     exit_px = _safe_float(getattr(close_order, "filled_avg_price", None))
-    proceeds = (exit_px or 0.0) * fq
+    has_fill = exit_px is not None and fq > 0
+    proceeds: Optional[float] = (exit_px * fq) if has_fill else None
     side = _position_side_str(pos)
     pnl: Optional[float] = None
-    if "long" in side and cost is not None:
+    if "long" in side and has_fill and cost is not None and proceeds is not None:
         pnl = proceeds - cost
+    elif "short" in side:
+        # Alpaca short cost_basis / fill math is easy to get wrong; use pre-close unrealized_pl.
+        pnl = u
     elif u is not None:
         pnl = u
-    elif cost is not None:
-        pnl = proceeds - cost
+    st = _order_status_lower(close_order)
     return {
         "pnl_usd": pnl,
         "entry_avg": _safe_float(getattr(pos, "avg_entry_price", None)),
@@ -253,7 +260,30 @@ def _build_close_pnl_summary(pos: Any, close_order: Any) -> Dict[str, Any]:
         "proceeds_usd": proceeds,
         "unrealized_pl_at_close": u,
         "side": side,
+        "close_order_status": st,
+        "close_fill_complete": has_fill and st == "filled",
     }
+
+
+def _poll_close_order_filled(client: TradingClient, order: Any, timeout_sec: float = 120.0) -> Any:
+    """
+    close_position() often returns before the market order is fully filled; without
+    filled_avg_price, P/L math shows bogus −cost_basis. Poll until filled or terminal.
+    """
+    oid = _order_id(order)
+    if not oid:
+        return order
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        o = client.get_order_by_id(oid)
+        st = _order_status_lower(o)
+        fap = _safe_float(getattr(o, "filled_avg_price", None))
+        if st == "filled" and fap is not None:
+            return o
+        if st in ("canceled", "rejected", "expired"):
+            return o
+        time.sleep(2.0)
+    return client.get_order_by_id(oid)
 
 
 def _close_position(client: TradingClient, symbol: str) -> Dict[str, Any]:
@@ -266,6 +296,7 @@ def _close_position(client: TradingClient, symbol: str) -> Dict[str, Any]:
         raise Exception("Not Found")
     alpaca_sym = str(getattr(pos, "symbol", "") or _alpaca_symbol(symbol))
     order = client.close_position(getattr(pos, "asset_id"))
+    order = _poll_close_order_filled(client, order)
     pnl_summary = _build_close_pnl_summary(pos, order)
     return {
         "close_order_id": _order_id(order),
@@ -301,6 +332,9 @@ def _format_alpaca_close_telegram(
     cost = pnl_summary.get("cost_basis")
     proceeds = pnl_summary.get("proceeds_usd")
     side = pnl_summary.get("side") or "?"
+    ost = pnl_summary.get("close_order_status") or ""
+    fill_ok = bool(pnl_summary.get("close_fill_complete"))
+    u_pre = pnl_summary.get("unrealized_pl_at_close")
 
     def _money(v: Any) -> str:
         if v is None:
@@ -319,19 +353,26 @@ def _format_alpaca_close_telegram(
         except (TypeError, ValueError):
             return str(v)
 
-    if pnl is None:
-        pnl_line = "—"
+    if pnl is not None and fill_ok and exit_ is not None:
+        pnl_line = f"Realized P/L (round-trip): ${float(pnl):+,.2f}"
+    elif pnl is not None:
+        pnl_line = f"Realized P/L (best estimate): ${float(pnl):+,.2f}"
+    elif u_pre is not None:
+        pnl_line = (
+            f"P/L: not computed (close fill incomplete). "
+            f"Unrealized before close: {_money(u_pre)} · order status: {ost or '?'}"
+        )
     else:
-        pnl_line = f"${float(pnl):+,.2f}"
+        pnl_line = f"P/L: unknown (close fill incomplete; order status: {ost or '?'})"
 
     lines = [
         f"Alpaca close ({mode})",
         f"{asset} · {internal_symbol} (broker: {alpaca_sym})",
         f"Side: {side} · Hold: {hold_seconds}s",
-        f"Avg entry: {_money(entry)} → Avg exit: {_money(exit_)}",
-        f"Qty: {_qty_str(qty)}",
-        f"Cost basis: {_money(cost)} · Proceeds (fill): {_money(proceeds)}",
-        f"P/L (realized est.): {pnl_line}",
+        f"Avg entry: {_money(entry)} → Avg exit (close fill): {_money(exit_)}",
+        f"Qty (position): {_qty_str(qty)}",
+        f"Cost basis (open): {_money(cost)} · Proceeds (close sell/buy fill): {_money(proceeds)}",
+        pnl_line,
     ]
     return "\n".join(lines)
 

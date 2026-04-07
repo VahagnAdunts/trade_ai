@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from statistics import mean, pstdev
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -22,7 +22,9 @@ def build_feature_context(symbol: str, points: Sequence[OHLCVPoint]) -> Dict[str
     bb_mid, bb_upper, bb_lower = _bollinger(closes, 20, 2.0)
     atr14 = _atr(highs, lows, closes, 14)
     obv_series = _obv(closes, volumes)
-    vwap, vwap_basis, vwap_volume_weighted = _vwap_session(points)
+    vwap, vwap_basis, vwap_volume_weighted, vwap_session_bars, vwap_session_date_utc = _vwap_session(
+        points
+    )
     dq_volume, dq_warnings = _volume_data_quality(volumes, vwap_volume_weighted=vwap_volume_weighted)
 
     last_close = closes[-1]
@@ -57,11 +59,16 @@ def build_feature_context(symbol: str, points: Sequence[OHLCVPoint]) -> Dict[str
     last_1d = c1d[-1] if c1d else last_close
     bias_1d = _price_vs_ema_bias(last_1d, ema_1d_20)
     trend_1d = _bias_to_trend(bias_1d)
+    trend_1h = _bias_to_trend(bias_1h)
 
-    tf_align = {
-        "1h_4h_agree": _tf_biases_agree(bias_1h, bias_4h),
-        "1h_1d_agree": _tf_biases_agree(bias_1h, bias_1d),
-    }
+    timeframe_alignment = _build_timeframe_alignment(
+        trend_1h=trend_1h,
+        trend_4h=trend_4h,
+        trend_1d=trend_1d,
+        bias_1h=bias_1h,
+        bias_4h=bias_4h,
+        bias_1d=bias_1d,
+    )
 
     features: Dict[str, Any] = {
         "symbol": symbol,
@@ -77,6 +84,17 @@ def build_feature_context(symbol: str, points: Sequence[OHLCVPoint]) -> Dict[str
             "vwap": _r(vwap),
             "vwap_deviation_pct": _r(_dist_pct(last_close, vwap)),
             "vwap_basis": vwap_basis,
+            "vwap_scope": (
+                "session_vwap_utc_calendar_day_of_last_bar"
+                if vwap_basis == "session_day"
+                else (
+                    "last_24h_fallback"
+                    if vwap_basis == "last_24h_fallback"
+                    else "none"
+                )
+            ),
+            "vwap_session_bars": vwap_session_bars,
+            "vwap_session_date_utc": vwap_session_date_utc,
         },
         "momentum": {
             "rsi_14": _r(rsi14),
@@ -129,7 +147,7 @@ def build_feature_context(symbol: str, points: Sequence[OHLCVPoint]) -> Dict[str
             "dist_to_ema20_pct": _r(_dist_pct(last_1d, ema_1d_20)),
             "trend": trend_1d,
         },
-        "tf_alignment": tf_align,
+        "timeframe_alignment": timeframe_alignment,
     }
 
     return features
@@ -226,6 +244,50 @@ def _bias_to_trend(bias: int) -> str:
 def _tf_biases_agree(b1: int, b2: int) -> bool:
     """True when directional bias vs EMA20 matches (including both neutral)."""
     return b1 == b2
+
+
+def _build_timeframe_alignment(
+    *,
+    trend_1h: str,
+    trend_4h: str,
+    trend_1d: str,
+    bias_1h: int,
+    bias_4h: int,
+    bias_1d: int,
+) -> Dict[str, Any]:
+    """
+    Independent trends: 1h from hourly closes vs EMA20; 4h from aggregated 4h bars vs EMA20;
+    daily from UTC-calendar daily bars vs EMA20. Conflicting directions imply a weak setup.
+    """
+    alignment_score, all_aligned = _timeframe_alignment_score_and_flag(
+        trend_1h, trend_4h, trend_1d
+    )
+    return {
+        "trend_1h": trend_1h,
+        "trend_4h": trend_4h,
+        "trend_1d": trend_1d,
+        "alignment_score": _r(alignment_score),
+        "all_aligned": all_aligned,
+        "1h_4h_agree": _tf_biases_agree(bias_1h, bias_4h),
+        "1h_1d_agree": _tf_biases_agree(bias_1h, bias_1d),
+    }
+
+
+def _timeframe_alignment_score_and_flag(
+    trend_1h: str,
+    trend_4h: str,
+    trend_1d: str,
+) -> Tuple[float, bool]:
+    """
+    alignment_score = max(count bullish, count bearish, count neutral) / 3 (e.g. one bull, one bear, one neutral → 1/3).
+    all_aligned = all three bullish or all three bearish (strong multi-TF agreement; excludes all-neutral).
+    """
+    trends = [trend_1h, trend_4h, trend_1d]
+    c = Counter(trends)
+    max_count = max(c.values()) if trends else 0
+    alignment_score = max_count / 3.0
+    all_aligned = (c.get("bullish", 0) == 3) or (c.get("bearish", 0) == 3)
+    return alignment_score, all_aligned
 
 
 def _ret_pct(closes: Sequence[float], lookback: int) -> float:
@@ -392,19 +454,18 @@ def _volume_data_quality(
     return meta, warnings
 
 
-def _vwap_session(points: Sequence[OHLCVPoint]) -> Tuple[float, str, bool]:
+def _vwap_session(points: Sequence[OHLCVPoint]) -> Tuple[float, str, bool, int, str]:
     """
-    Session VWAP: volume-weighted typical price for the current session only.
+    Session VWAP — not a 30-day or full-history blend.
 
-    Session = all bars whose calendar date matches the latest bar (typical for hourly
-    data: intraday session for stocks; for 24h crypto, "today" in the bar timestamps' calendar day).
+    Uses only bars on the same UTC calendar date as the latest bar (institutional-style
+    session VWAP on hourly data). If that set is empty, falls back to the last 24 bars.
 
-    If no bars match (edge case), falls back to the last 24 hourly bars.
-    Returns (vwap, basis_label, volume_weighted) where volume_weighted is False if sum(volume)==0
-    (caller must not treat VWAP as true VWAP in that case).
+    Returns (vwap, basis_label, volume_weighted, session_bar_count, session_date_utc YYYY-MM-DD).
+    volume_weighted is False if sum(volume)==0 (caller must not treat as true VWAP).
     """
     if not points:
-        return 0.0, "none", False
+        return 0.0, "none", False, 0, ""
     last = points[-1]
     day = last.datetime.date()
     session = [p for p in points if p.datetime.date() == day]
@@ -412,6 +473,8 @@ def _vwap_session(points: Sequence[OHLCVPoint]) -> Tuple[float, str, bool]:
     if not session:
         session = list(points[-24:]) if len(points) >= 24 else list(points)
         basis = "last_24h_fallback"
+
+    session_date = session[-1].datetime.date().isoformat() if session else day.isoformat()
 
     numer = 0.0
     denom = 0.0
@@ -421,10 +484,10 @@ def _vwap_session(points: Sequence[OHLCVPoint]) -> Tuple[float, str, bool]:
         numer += typical * vol
         denom += vol
     if denom > 0:
-        return numer / denom, basis, True
+        return numer / denom, basis, True, len(session), session_date
     # No volume in window: use typical of the last bar in the window
     p = session[-1]
-    return (p.high + p.low + p.close) / 3.0, basis, False
+    return (p.high + p.low + p.close) / 3.0, basis, False, len(session), session_date
 
 
 def _zscore(values: Sequence[float], current: float, lookback: int) -> float:

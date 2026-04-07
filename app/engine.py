@@ -4,7 +4,8 @@ import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from app.alpaca_pending import reconcile_pending_closes_on_startup
 from app.alpaca_trading import alpaca_consensus_round_trip, log_alpaca_account_health
@@ -16,6 +17,35 @@ from app.regime import build_market_regime_payload, load_regime_cache
 from app.consensus_format import format_consensus_telegram_message
 from app.telegram_notifier import TelegramConfig, send_telegram_message
 from app.models import ConsensusResult, LLMDecision
+
+
+def _nyse_reference_clock_parts() -> Tuple[str, str, str]:
+    """Wall-clock in New York (America/New_York) at analysis time — iso, human display, tz id."""
+    now = datetime.now(ZoneInfo("America/New_York"))
+    tz = now.tzname() or ""
+    display = f"{now.strftime('%Y-%m-%d %H:%M:%S')} {tz}".strip()
+    return now.isoformat(), display, "America/New_York"
+
+
+def _nyse_reference_for_equity_prompt() -> Dict[str, str]:
+    iso, display, tzid = _nyse_reference_clock_parts()
+    return {
+        "timezone": tzid,
+        "now_local_iso": iso,
+        "display": display,
+        "message": (
+            "Wall-clock time in New York when this analysis ran (reference for US equity / NYSE session context). "
+            "NYSE regular session is typically 09:30–16:00 ET on weekdays; this clock does not check holidays."
+        ),
+    }
+
+
+def _nyse_reference_line_for_raw() -> str:
+    d = _nyse_reference_for_equity_prompt()
+    return (
+        f"Reference time (New York Stock Exchange session clock, {d['timezone']}): "
+        f"{d['display']} ({d['now_local_iso']})"
+    )
 
 
 def _candles_to_context(
@@ -31,6 +61,8 @@ def _candles_to_context(
         raise ValueError(f"Unsupported context mode: {mode}")
     if mode == "raw":
         body = _candles_to_raw_context(symbol, points, crypto=crypto)
+        if not crypto:
+            body = _nyse_reference_line_for_raw() + "\n\n" + body
         if market_regime:
             body += "\n\nmarket_regime (JSON, Twelve Data benchmarks):\n"
             body += json.dumps(market_regime, indent=2)
@@ -45,6 +77,8 @@ def _candles_to_context(
         "context_mode": mode,
         "feature_snapshot": features,
     }
+    if not crypto:
+        payload["nyse_reference_clock"] = _nyse_reference_for_equity_prompt()
     if market_regime is not None:
         payload["market_regime"] = market_regime
     if mode == "hybrid":

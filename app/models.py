@@ -70,3 +70,8 @@ class ConsensusResult(BaseModel):
     minimum_confidence: int
     passes_threshold: bool
     model_count: int
+    # Option-4 sizing: (n/4)×(mean supporter confidence/100) → linear map to [min,max] USD
+    supporter_count: int = 0
+    mean_supporter_confidence: float = 0.0
+    strength_score: float = 0.0
+    order_usd: Optional[float] = None

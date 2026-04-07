@@ -121,6 +121,7 @@ def _submit_market_order(
     symbol: str,
     side: str,
     config: AppConfig,
+    notional_usd: float,
     *,
     crypto: bool = False,
 ) -> Dict[str, Any]:
@@ -143,7 +144,6 @@ def _submit_market_order(
                 ),
                 "symbol": alpaca_sym,
             }
-        notional_usd = config.alpaca_order_dollars
         req = MarketOrderRequest(
             symbol=alpaca_sym,
             notional=notional_usd,
@@ -161,7 +161,6 @@ def _submit_market_order(
         }
 
     if side == "long":
-        notional_usd = config.alpaca_order_dollars
         req = MarketOrderRequest(
             symbol=alpaca_sym,
             notional=notional_usd,
@@ -177,7 +176,7 @@ def _submit_market_order(
             "order_status": _order_status(order),
         }
 
-    notional = config.alpaca_order_dollars
+    notional = notional_usd
     price = fetch_quote_close_sync(symbol, config.stock_data_api_key)
     if price <= 0:
         raise ValueError(f"Invalid quote price for {symbol}: {price}")
@@ -187,7 +186,7 @@ def _submit_market_order(
             "skipped": True,
             "reason": "order_dollars_below_one_share",
             "message": (
-                f"ALPACA_ORDER_DOLLARS (${notional:g}) is below one share at last quote ~${price:.2f}; "
+                f"Order notional (${notional:g}) is below one share at last quote ~${price:.2f}; "
                 "short not opened."
             ),
             "notional_usd": notional,
@@ -494,6 +493,7 @@ async def alpaca_consensus_round_trip(
     symbol: str,
     side: str,
     *,
+    order_usd: float,
     crypto: bool = False,
     telegram_cfg: Optional[TelegramConfig] = None,
 ) -> Dict[str, Any]:
@@ -512,7 +512,7 @@ async def alpaca_consensus_round_trip(
     )
 
     hold = config.alpaca_hold_seconds
-    dollars = config.alpaca_order_dollars
+    dollars = order_usd
     alpaca_sym = _alpaca_symbol(symbol)
     out: Dict[str, Any] = {
         "ok": False,
@@ -528,7 +528,13 @@ async def alpaca_consensus_round_trip(
 
     try:
         open_res = await asyncio.to_thread(
-            _submit_market_order, open_client, symbol, side, config, crypto=crypto
+            _submit_market_order,
+            open_client,
+            symbol,
+            side,
+            config,
+            dollars,
+            crypto=crypto,
         )
         out["open"] = open_res
         if open_res.get("skipped"):

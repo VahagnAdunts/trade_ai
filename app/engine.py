@@ -121,9 +121,17 @@ def _print_model_error(symbol: str, exc: Exception) -> None:
 
 def _print_consensus(symbol: str, consensus: dict) -> None:
     action = consensus["aligned_action"] or "none"
+    extra = ""
+    if consensus.get("passes_threshold") and consensus.get("order_usd") is not None:
+        extra = (
+            f", size≈${consensus['order_usd']:.2f} "
+            f"(strength={consensus.get('strength_score')}, "
+            f"n={consensus.get('supporter_count')}, mean={consensus.get('mean_supporter_confidence')}%)"
+        )
     print(
         f"[{symbol}] STEP 3: CONSENSUS -> action={action}, "
         f"min_conf={consensus['minimum_confidence']}%, passes={consensus['passes_threshold']}"
+        f"{extra}"
     )
 
 
@@ -165,12 +173,28 @@ def _consensus(
     passes = len(supporters) >= min_models
     min_conf = min((d.confidence for d in supporters), default=0)
 
+    n_sup = len(supporters)
+    mean_sup = (
+        sum(d.confidence for d in supporters) / n_sup if n_sup else 0.0
+    )
+    strength = (n_sup / 4.0) * (mean_sup / 100.0) if n_sup else 0.0
+    order_usd: Optional[float] = None
+    if passes and n_sup > 0:
+        lo = config.alpaca_order_min_dollars
+        hi = config.alpaca_order_max_dollars
+        raw = lo + strength * (hi - lo)
+        order_usd = round(max(lo, min(hi, raw)), 2)
+
     return ConsensusResult(
         symbol=symbol,
         aligned_action=chosen_side if passes else None,
         minimum_confidence=min_conf,
         passes_threshold=passes,
         model_count=len(decisions),
+        supporter_count=n_sup,
+        mean_supporter_confidence=round(mean_sup, 4),
+        strength_score=round(strength, 6),
+        order_usd=order_usd,
     )
 
 
@@ -361,6 +385,10 @@ async def run_analysis(
                 minimum_confidence=0,
                 passes_threshold=False,
                 model_count=0,
+                supporter_count=0,
+                mean_supporter_confidence=0.0,
+                strength_score=0.0,
+                order_usd=None,
             ).model_dump()
 
         if consensus["passes_threshold"]:
@@ -400,21 +428,34 @@ async def run_analysis(
         if consensus.get("passes_threshold") and config.alpaca_enabled and not crypto:
             aligned = consensus.get("aligned_action")
             assert aligned in ("long", "short")
-            print(
-                f"[{symbol}] ALPACA: scheduling {aligned.upper()} market order, "
-                f"close after {config.alpaca_hold_seconds}s (paper={config.alpaca_paper})"
-            )
-            task = asyncio.create_task(
-                alpaca_consensus_round_trip(
-                    config,
-                    symbol,
-                    aligned,
-                    crypto=False,
-                    telegram_cfg=telegram_cfg,
+            order_usd = consensus.get("order_usd")
+            if order_usd is None:
+                print(
+                    f"[{symbol}] ALPACA: skip — consensus passed but order_usd missing (unexpected)",
+                    flush=True,
                 )
-            )
-            alpaca_tasks.append((symbol, task))
-            sym_entry["alpaca"] = {"scheduled": True, "side": aligned}
+            else:
+                print(
+                    f"[{symbol}] ALPACA: scheduling {aligned.upper()} market order "
+                    f"~${order_usd:.2f} (strength={consensus.get('strength_score')}), "
+                    f"close after {config.alpaca_hold_seconds}s (paper={config.alpaca_paper})"
+                )
+                task = asyncio.create_task(
+                    alpaca_consensus_round_trip(
+                        config,
+                        symbol,
+                        aligned,
+                        order_usd=float(order_usd),
+                        crypto=False,
+                        telegram_cfg=telegram_cfg,
+                    )
+                )
+                alpaca_tasks.append((symbol, task))
+                sym_entry["alpaca"] = {
+                    "scheduled": True,
+                    "side": aligned,
+                    "order_usd": float(order_usd),
+                }
 
         full_report["symbols"][symbol] = sym_entry
 

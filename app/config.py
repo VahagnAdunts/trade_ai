@@ -28,7 +28,8 @@ class AppConfig:
     alpaca_api_key_id: Optional[str]
     alpaca_api_secret_key: Optional[str]
     alpaca_paper: bool
-    alpaca_order_dollars: float
+    alpaca_order_min_dollars: float
+    alpaca_order_max_dollars: float
     alpaca_hold_seconds: int
     alpaca_pending_closes_file: str
     symbols: List[str]
@@ -57,10 +58,18 @@ class AppConfig:
             )
 
         alpaca_paper = _parse_bool(_required("ALPACA_PAPER"))
-        alpaca_order_dollars = _parse_positive_float(
-            os.getenv("ALPACA_ORDER_DOLLARS"),
-            "ALPACA_ORDER_DOLLARS",
+        alpaca_order_min_dollars = _parse_positive_float(
+            os.getenv("ALPACA_ORDER_MIN_DOLLARS"),
+            "ALPACA_ORDER_MIN_DOLLARS",
         )
+        alpaca_order_max_dollars = _parse_positive_float(
+            os.getenv("ALPACA_ORDER_MAX_DOLLARS"),
+            "ALPACA_ORDER_MAX_DOLLARS",
+        )
+        if alpaca_order_min_dollars > alpaca_order_max_dollars:
+            raise ValueError(
+                "ALPACA_ORDER_MIN_DOLLARS must be less than or equal to ALPACA_ORDER_MAX_DOLLARS"
+            )
         alpaca_hold_seconds = _parse_positive_int_env(
             os.getenv("ALPACA_HOLD_SECONDS"),
             "ALPACA_HOLD_SECONDS",
@@ -95,7 +104,8 @@ class AppConfig:
             alpaca_api_key_id=alpaca_api_key_id,
             alpaca_api_secret_key=alpaca_api_secret_key,
             alpaca_paper=alpaca_paper,
-            alpaca_order_dollars=alpaca_order_dollars,
+            alpaca_order_min_dollars=alpaca_order_min_dollars,
+            alpaca_order_max_dollars=alpaca_order_max_dollars,
             alpaca_hold_seconds=alpaca_hold_seconds,
             alpaca_pending_closes_file=alpaca_pending_closes_file,
             symbols=_parse_symbols(os.getenv("SYMBOLS")),

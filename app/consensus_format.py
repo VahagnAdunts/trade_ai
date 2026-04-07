@@ -21,6 +21,13 @@ def format_consensus_telegram_message(
     min_conf = consensus.get("minimum_confidence", 0)
     tag = "[CRYPTO] " if crypto else ""
     lines = [f"{tag}CONSENSUS ✅ {symbol} {action} (min {min_conf}%)"]
+    ou = consensus.get("order_usd")
+    if ou is not None and not crypto:
+        lines.append(
+            f"Alpaca size ~${float(ou):,.2f} "
+            f"(strength={consensus.get('strength_score')}, "
+            f"n={consensus.get('supporter_count')}, mean={consensus.get('mean_supporter_confidence')}%)"
+        )
     for key in ("chatgpt", "gemini", "claude", "grok"):
         item = per_model.get(key) or {}
         if item.get("error"):

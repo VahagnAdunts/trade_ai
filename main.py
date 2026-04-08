@@ -147,11 +147,17 @@ def _run_news_trading() -> None:
 
 
 async def _run_both() -> None:
+    """Run Telegram runner + news trading engine simultaneously."""
     from app.news_trading.news_engine import NewsTradeEngine
     config = AppConfig.from_env()
+    tg = TelegramConfig(
+        enabled=config.telegram_enabled,
+        bot_token=config.telegram_bot_token,
+        chat_id=config.telegram_chat_id,
+    )
     engine = NewsTradeEngine(config)
     await asyncio.gather(
-        run_analysis(config),
+        _run_from_telegram(config, tg),
         engine.start(),
         return_exceptions=True,
     )
@@ -210,7 +216,7 @@ def main() -> None:
     parser.add_argument(
         "--both",
         action="store_true",
-        help="Run scheduled analysis AND news trading engine simultaneously",
+        help="Run Telegram runner (/run, /run_crypto) AND news trading engine simultaneously",
     )
     args = parser.parse_args()
 

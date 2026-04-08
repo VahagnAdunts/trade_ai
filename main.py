@@ -129,6 +129,34 @@ async def _run_from_telegram(config: AppConfig, tg: TelegramConfig) -> None:
                 running = False
 
 
+def _run_news_trading() -> None:
+    from app.news_trading.news_engine import NewsTradeEngine
+    config = AppConfig.from_env()
+    if not config.news_trading_enabled:
+        print(
+            "Set NEWS_TRADING_ENABLED=true in .env to use this mode.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    print("Starting news trading engine — press Ctrl+C to stop.")
+    engine = NewsTradeEngine(config)
+    try:
+        asyncio.run(engine.start())
+    except KeyboardInterrupt:
+        print("\nNews trading engine stopped.")
+
+
+async def _run_both() -> None:
+    from app.news_trading.news_engine import NewsTradeEngine
+    config = AppConfig.from_env()
+    engine = NewsTradeEngine(config)
+    await asyncio.gather(
+        run_analysis(config),
+        engine.start(),
+        return_exceptions=True,
+    )
+
+
 def _run_serve(host: str, port: int) -> None:
     try:
         import uvicorn
@@ -174,9 +202,23 @@ def main() -> None:
         action="store_true",
         help="Run crypto pipeline (default top-20 USD pairs, outputs under outputs_crypto/)",
     )
+    parser.add_argument(
+        "--news-trade",
+        action="store_true",
+        help="Start real-time news-driven trading engine",
+    )
+    parser.add_argument(
+        "--both",
+        action="store_true",
+        help="Run scheduled analysis AND news trading engine simultaneously",
+    )
     args = parser.parse_args()
 
-    if args.serve:
+    if args.news_trade:
+        _run_news_trading()
+    elif args.both:
+        asyncio.run(_run_both())
+    elif args.serve:
         _run_serve(args.host, args.port)
     elif args.telegram_runner:
         cfg = AppConfig.from_env()

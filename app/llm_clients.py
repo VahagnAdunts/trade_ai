@@ -196,6 +196,14 @@ def _parse_json_object(raw_text: str) -> dict:
     raise ValueError(f"Unable to parse JSON from model output. Preview: {preview}")
 
 
+_EXIT_MODELS = {
+    "OpenAI": "gpt-4o-mini",
+    "Gemini": "gemini-2.0-flash",
+    "Claude": "claude-3-5-haiku-latest",
+    "Grok": "grok-beta",
+}
+
+
 class OpenAIAnalyzer:
     def __init__(self, api_key: str, model_name: str) -> None:
         self.model_name = model_name
@@ -221,6 +229,47 @@ class OpenAIAnalyzer:
         )
 
 
+    def analyze_news(self, sys_prompt: str, user_msg: str, symbol: str) -> dict:
+        text = self.client.responses.create(
+            model=self.model_name,
+            input=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+        ).output_text.strip()
+        data = _parse_json_object(text)
+        lc = int(data.get("long_confidence", 0))
+        sc = int(data.get("short_confidence", 0))
+        action = "long" if lc >= sc else "short"
+        return {
+            "long_confidence": lc,
+            "short_confidence": sc,
+            "confidence": max(lc, sc),
+            "action": action,
+            "thinking": data.get("thinking", ""),
+            "max_hold_minutes": int(data.get("max_hold_minutes", 60)),
+            "invalidation": data.get("invalidation", ""),
+            "horizon": data.get("horizon", "event_driven"),
+        }
+
+    def quick_exit_decision(self, sys_prompt: str, user_msg: str) -> dict:
+        try:
+            text = self.client.responses.create(
+                model=_EXIT_MODELS["OpenAI"],
+                input=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_msg},
+                ],
+            ).output_text.strip()
+            data = _parse_json_object(text)
+            return {
+                "decision": data.get("decision", "hold"),
+                "urgency": data.get("urgency", "normal"),
+            }
+        except Exception:
+            return {"decision": "hold", "urgency": "normal"}
+
+
 class GeminiAnalyzer:
     def __init__(self, api_key: str, model_name: str) -> None:
         self.model_name = model_name
@@ -242,6 +291,45 @@ class GeminiAnalyzer:
             output_model_name="gemini",
             symbol=symbol,
         )
+
+
+    def analyze_news(self, sys_prompt: str, user_msg: str, symbol: str) -> dict:
+        text = (
+            genai.GenerativeModel(model_name=self.model_name)
+            .generate_content(f"{sys_prompt}\n\n{user_msg}")
+            .text
+            or ""
+        ).strip()
+        data = _parse_json_object(text)
+        lc = int(data.get("long_confidence", 0))
+        sc = int(data.get("short_confidence", 0))
+        action = "long" if lc >= sc else "short"
+        return {
+            "long_confidence": lc,
+            "short_confidence": sc,
+            "confidence": max(lc, sc),
+            "action": action,
+            "thinking": data.get("thinking", ""),
+            "max_hold_minutes": int(data.get("max_hold_minutes", 60)),
+            "invalidation": data.get("invalidation", ""),
+            "horizon": data.get("horizon", "event_driven"),
+        }
+
+    def quick_exit_decision(self, sys_prompt: str, user_msg: str) -> dict:
+        try:
+            text = (
+                genai.GenerativeModel(model_name=_EXIT_MODELS["Gemini"])
+                .generate_content(f"{sys_prompt}\n\n{user_msg}")
+                .text
+                or ""
+            ).strip()
+            data = _parse_json_object(text)
+            return {
+                "decision": data.get("decision", "hold"),
+                "urgency": data.get("urgency", "normal"),
+            }
+        except Exception:
+            return {"decision": "hold", "urgency": "normal"}
 
 
 class ClaudeAnalyzer:
@@ -278,6 +366,53 @@ class ClaudeAnalyzer:
         )
 
 
+    def analyze_news(self, sys_prompt: str, user_msg: str, symbol: str) -> dict:
+        text = "".join(
+            block.text
+            for block in self.client.messages.create(
+                model=self.model_name,
+                max_tokens=2048,
+                system=sys_prompt,
+                messages=[{"role": "user", "content": user_msg}],
+            ).content
+            if getattr(block, "type", "") == "text"
+        ).strip()
+        data = _parse_json_object(text)
+        lc = int(data.get("long_confidence", 0))
+        sc = int(data.get("short_confidence", 0))
+        action = "long" if lc >= sc else "short"
+        return {
+            "long_confidence": lc,
+            "short_confidence": sc,
+            "confidence": max(lc, sc),
+            "action": action,
+            "thinking": data.get("thinking", ""),
+            "max_hold_minutes": int(data.get("max_hold_minutes", 60)),
+            "invalidation": data.get("invalidation", ""),
+            "horizon": data.get("horizon", "event_driven"),
+        }
+
+    def quick_exit_decision(self, sys_prompt: str, user_msg: str) -> dict:
+        try:
+            text = "".join(
+                block.text
+                for block in self.client.messages.create(
+                    model=_EXIT_MODELS["Claude"],
+                    max_tokens=512,
+                    system=sys_prompt,
+                    messages=[{"role": "user", "content": user_msg}],
+                ).content
+                if getattr(block, "type", "") == "text"
+            ).strip()
+            data = _parse_json_object(text)
+            return {
+                "decision": data.get("decision", "hold"),
+                "urgency": data.get("urgency", "normal"),
+            }
+        except Exception:
+            return {"decision": "hold", "urgency": "normal"}
+
+
 class GrokAnalyzer:
     def __init__(self, api_key: str, model_name: str) -> None:
         self.model_name = model_name
@@ -301,6 +436,47 @@ class GrokAnalyzer:
             output_model_name="grok",
             symbol=symbol,
         )
+
+
+    def analyze_news(self, sys_prompt: str, user_msg: str, symbol: str) -> dict:
+        text = self.client.responses.create(
+            model=self.model_name,
+            input=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+        ).output_text.strip()
+        data = _parse_json_object(text)
+        lc = int(data.get("long_confidence", 0))
+        sc = int(data.get("short_confidence", 0))
+        action = "long" if lc >= sc else "short"
+        return {
+            "long_confidence": lc,
+            "short_confidence": sc,
+            "confidence": max(lc, sc),
+            "action": action,
+            "thinking": data.get("thinking", ""),
+            "max_hold_minutes": int(data.get("max_hold_minutes", 60)),
+            "invalidation": data.get("invalidation", ""),
+            "horizon": data.get("horizon", "event_driven"),
+        }
+
+    def quick_exit_decision(self, sys_prompt: str, user_msg: str) -> dict:
+        try:
+            text = self.client.responses.create(
+                model=_EXIT_MODELS["Grok"],
+                input=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_msg},
+                ],
+            ).output_text.strip()
+            data = _parse_json_object(text)
+            return {
+                "decision": data.get("decision", "hold"),
+                "urgency": data.get("urgency", "normal"),
+            }
+        except Exception:
+            return {"decision": "hold", "urgency": "normal"}
 
 
 def _run_configured_model(

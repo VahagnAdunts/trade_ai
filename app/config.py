@@ -37,6 +37,21 @@ class AppConfig:
     consensus_min_models: int
     consensus_min_confidence_pct: int
     consensus_min_confidence_crypto_pct: int
+    # ── News trading module (disabled by default) ──────────────────────────────
+    news_trading_enabled: bool
+    news_alpaca_news_enabled: bool
+    news_polygon_api_key: Optional[str]
+    news_crypto_panic_api_key: Optional[str]
+    news_trade_dollars: float
+    news_max_hold_minutes: int
+    news_stop_loss_pct: float
+    news_take_profit_pct: float
+    news_min_confidence_pct: int
+    news_crypto_enabled: bool
+    news_equity_enabled: bool
+    binance_api_key: Optional[str]
+    binance_secret_key: Optional[str]
+    binance_testnet: bool
 
     @staticmethod
     def from_env() -> "AppConfig":
@@ -86,6 +101,32 @@ class AppConfig:
             "CONSENSUS_MIN_CONFIDENCE_CRYPTO_PERCENT",
         )
 
+        # News trading — all optional with safe defaults so existing users are not broken
+        news_trading_enabled = _parse_bool_default(os.getenv("NEWS_TRADING_ENABLED"), False)
+        news_alpaca_news_enabled = _parse_bool_default(os.getenv("NEWS_ALPACA_ENABLED"), True)
+        news_polygon_api_key = _parse_optional_str(os.getenv("NEWS_POLYGON_API_KEY"))
+        news_crypto_panic_api_key = _parse_optional_str(os.getenv("NEWS_CRYPTO_PANIC_API_KEY"))
+        news_trade_dollars = _parse_positive_float_default(
+            os.getenv("NEWS_TRADE_DOLLARS"), 200.0
+        )
+        news_max_hold_minutes = _parse_positive_int_default(
+            os.getenv("NEWS_MAX_HOLD_MINUTES"), 60
+        )
+        news_stop_loss_pct = _parse_positive_float_default(
+            os.getenv("NEWS_STOP_LOSS_PCT"), 0.8
+        )
+        news_take_profit_pct = _parse_positive_float_default(
+            os.getenv("NEWS_TAKE_PROFIT_PCT"), 2.0
+        )
+        news_min_confidence_pct = _parse_confidence_pct_default(
+            os.getenv("NEWS_MIN_CONFIDENCE_PCT"), 70
+        )
+        news_crypto_enabled = _parse_bool_default(os.getenv("NEWS_CRYPTO_ENABLED"), False)
+        news_equity_enabled = _parse_bool_default(os.getenv("NEWS_EQUITY_ENABLED"), True)
+        binance_api_key = _parse_optional_str(os.getenv("BINANCE_API_KEY"))
+        binance_secret_key = _parse_optional_str(os.getenv("BINANCE_SECRET_KEY"))
+        binance_testnet = _parse_bool_default(os.getenv("BINANCE_TESTNET"), True)
+
         return AppConfig(
             stock_data_api_key=_required("STOCK_DATA_API_KEY"),
             openai_api_key=_required("OPENAI_API_KEY"),
@@ -113,6 +154,20 @@ class AppConfig:
             consensus_min_models=consensus_min_models,
             consensus_min_confidence_pct=consensus_min_confidence_pct,
             consensus_min_confidence_crypto_pct=consensus_min_confidence_crypto_pct,
+            news_trading_enabled=news_trading_enabled,
+            news_alpaca_news_enabled=news_alpaca_news_enabled,
+            news_polygon_api_key=news_polygon_api_key,
+            news_crypto_panic_api_key=news_crypto_panic_api_key,
+            news_trade_dollars=news_trade_dollars,
+            news_max_hold_minutes=news_max_hold_minutes,
+            news_stop_loss_pct=news_stop_loss_pct,
+            news_take_profit_pct=news_take_profit_pct,
+            news_min_confidence_pct=news_min_confidence_pct,
+            news_crypto_enabled=news_crypto_enabled,
+            news_equity_enabled=news_equity_enabled,
+            binance_api_key=binance_api_key,
+            binance_secret_key=binance_secret_key,
+            binance_testnet=binance_testnet,
         )
 
 
@@ -203,3 +258,42 @@ def _parse_confidence_pct(raw: str | None, label: str) -> int:
     if not 0 <= v <= 100:
         raise ValueError(f"{label} must be between 0 and 100")
     return v
+
+
+def _parse_bool_default(raw: str | None, default: bool) -> bool:
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return _parse_bool(raw)
+    except ValueError:
+        return default
+
+
+def _parse_positive_float_default(raw: str | None, default: float) -> float:
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        v = float(str(raw).strip())
+        return v if v > 0 else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _parse_positive_int_default(raw: str | None, default: int) -> int:
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        v = int(str(raw).strip())
+        return v if v > 0 else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _parse_confidence_pct_default(raw: str | None, default: int) -> int:
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        v = int(str(raw).strip())
+        return v if 0 <= v <= 100 else default
+    except (ValueError, TypeError):
+        return default

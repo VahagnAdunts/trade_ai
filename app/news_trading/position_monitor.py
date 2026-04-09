@@ -231,18 +231,6 @@ class PositionMonitor:
         )
         await send_telegram_message(self.telegram_cfg, msg1)
 
-        # Full exit prompt as second message
-        msg2 = (
-            f"📋 EXIT PROMPT — {sym}\n"
-            f"{'─'*30}\n"
-            f"[System]\n{sys_prompt.strip()}\n\n"
-            f"[User]\n{user_msg.strip()}"
-        )
-        # Telegram limit 4096 chars — truncate if needed
-        if len(msg2) > 4000:
-            msg2 = msg2[:3990] + "\n...[truncated]"
-        await send_telegram_message(self.telegram_cfg, msg2)
-
     def _calculate_pnl_pct(self, current_price: float) -> float:
         if self.position.entry_price == 0:
             return 0.0

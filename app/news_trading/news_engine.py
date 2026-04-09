@@ -663,14 +663,30 @@ class NewsTradeEngine:
 
         # Determine entry price.
         # Short orders include last_price_usd from the quote fetch.
-        # Long orders use notional so we fetch the current quote as best estimate.
+        # Long orders use notional — fetch current price from Alpaca (free, no TwelveData credits).
         entry_price = float(order_result.get("last_price_usd") or 0.0)
         if entry_price == 0.0 and asset_class == "equity":
             try:
-                from app.data_provider import fetch_quote_close_sync
-                entry_price = await asyncio.to_thread(
-                    fetch_quote_close_sync, symbol, self.config.stock_data_api_key
-                )
+                import httpx as _httpx
+                _headers = {
+                    "APCA-API-KEY-ID": self.config.alpaca_api_key_id or "",
+                    "APCA-API-SECRET-KEY": self.config.alpaca_api_secret_key or "",
+                }
+                async with _httpx.AsyncClient(timeout=8.0) as _client:
+                    _resp = await _client.get(
+                        f"https://data.alpaca.markets/v2/stocks/{symbol}/quotes/latest",
+                        headers=_headers,
+                    )
+                    if _resp.status_code == 200:
+                        _q = _resp.json().get("quote") or {}
+                        _bid = float(_q.get("bp") or 0)
+                        _ask = float(_q.get("ap") or 0)
+                        if _bid and _ask:
+                            entry_price = (_bid + _ask) / 2.0
+                        elif _ask:
+                            entry_price = _ask
+                        elif _bid:
+                            entry_price = _bid
             except Exception as exc:
                 print(f"[News] Could not fetch entry price for {symbol}: {exc}", flush=True)
 

@@ -63,10 +63,12 @@ class RealtimePriceFeed:
         symbol: str,
         asset_class: str,
         config: AppConfig,
+        force_refresh: bool = False,
     ) -> PriceSnapshot:
+        cache_key = f"{asset_class}:{symbol}"
         now = datetime.now(timezone.utc).timestamp()
-        cached = self._cache.get(symbol)
-        if cached:
+        cached = self._cache.get(cache_key)
+        if cached and not force_refresh:
             snap, fetched_at = cached
             if now - fetched_at < _CACHE_TTL:
                 return snap
@@ -76,7 +78,7 @@ class RealtimePriceFeed:
                 snap = await self._fetch_equity(symbol, config)
             else:
                 snap = await self._fetch_crypto(symbol, config)
-            self._cache[symbol] = (snap, now)
+            self._cache[cache_key] = (snap, now)
             return snap
         except Exception:
             if cached:
@@ -90,6 +92,14 @@ class RealtimePriceFeed:
             "APCA-API-SECRET-KEY": config.alpaca_api_secret_key or "",
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
+            # Latest trade
+            trade_resp = await client.get(
+                f"https://data.alpaca.markets/v2/stocks/{symbol}/trades/latest",
+                headers=headers,
+            )
+            trade_resp.raise_for_status()
+            trade_data = trade_resp.json()
+
             # Latest quote
             quote_resp = await client.get(
                 f"https://data.alpaca.markets/v2/stocks/{symbol}/quotes/latest",
@@ -107,21 +117,43 @@ class RealtimePriceFeed:
             bars_resp.raise_for_status()
             bars_data = bars_resp.json()
 
+        trade = trade_data.get("trade") or {}
+        trade_price = float(trade.get("p") or 0.0)
         quote = quote_data.get("quote") or {}
         bid = float(quote.get("bp") or 0) or None
         ask = float(quote.get("ap") or 0) or None
-        if bid and ask:
-            price = (bid + ask) / 2.0
+        mid_price = None
+        if bid and ask and ask >= bid:
+            mid_price = (bid + ask) / 2.0
         elif ask:
-            price = ask
+            mid_price = ask
         elif bid:
-            price = bid
-        else:
-            price = 0.0
+            mid_price = bid
 
         bars = bars_data.get("bars") or []
         closes = [float(b["c"]) for b in bars if "c" in b]
         volumes = [float(b.get("v", 0)) for b in bars]
+        last_close = closes[-1] if closes else 0.0
+
+        # Prefer trade price as the most direct market price; fallback to quote midpoint.
+        if trade_price > 0:
+            price = trade_price
+        elif mid_price:
+            price = mid_price
+        elif ask:
+            price = ask
+        elif bid:
+            price = bid
+        elif last_close > 0:
+            price = last_close
+        else:
+            price = 0.0
+
+        # Guardrail against transient quote/trade spikes that can trigger false exits.
+        if last_close > 0 and price > 0:
+            deviation = abs(price - last_close) / last_close
+            if deviation > 0.05:  # >5% off last 1-min close is likely bad tick
+                price = last_close
 
         return _compute_snapshot(symbol, price, bid, ask, closes, volumes)
 

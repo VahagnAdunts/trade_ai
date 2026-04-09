@@ -88,6 +88,24 @@ class PositionMonitor:
 
             # 3. Stop loss
             if pnl_pct <= -self.config.news_stop_loss_pct:
+                # Confirm with a fresh (non-cached) snapshot to avoid false triggers.
+                try:
+                    confirm_snapshot = await self.price_feed.get_snapshot(
+                        self.position.symbol,
+                        self.position.asset_class,
+                        self.config,
+                        force_refresh=True,
+                    )
+                    confirm_pnl = self._calculate_pnl_pct(confirm_snapshot.price)
+                    if confirm_pnl > -self.config.news_stop_loss_pct:
+                        continue
+                    snapshot = confirm_snapshot
+                    pnl_pct = confirm_pnl
+                except Exception as exc:
+                    print(
+                        f"[Monitor] {self.position.symbol} stop-loss confirm failed: {exc}",
+                        flush=True,
+                    )
                 return await self._close_and_notify(
                     reason="stop_loss",
                     exit_price=snapshot.price,
@@ -97,6 +115,24 @@ class PositionMonitor:
 
             # 4. Take profit
             if pnl_pct >= self.config.news_take_profit_pct:
+                # Confirm with a fresh (non-cached) snapshot to avoid false triggers.
+                try:
+                    confirm_snapshot = await self.price_feed.get_snapshot(
+                        self.position.symbol,
+                        self.position.asset_class,
+                        self.config,
+                        force_refresh=True,
+                    )
+                    confirm_pnl = self._calculate_pnl_pct(confirm_snapshot.price)
+                    if confirm_pnl < self.config.news_take_profit_pct:
+                        continue
+                    snapshot = confirm_snapshot
+                    pnl_pct = confirm_pnl
+                except Exception as exc:
+                    print(
+                        f"[Monitor] {self.position.symbol} take-profit confirm failed: {exc}",
+                        flush=True,
+                    )
                 return await self._close_and_notify(
                     reason="take_profit",
                     exit_price=snapshot.price,

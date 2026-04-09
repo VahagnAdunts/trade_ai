@@ -661,10 +661,12 @@ class NewsTradeEngine:
             print(f"[News] {symbol} order failed: {exc}", flush=True)
             return None
 
-        # Determine entry price.
-        # Short orders include last_price_usd from the quote fetch.
-        # Long orders use notional — fetch current price from Alpaca (free, no TwelveData credits).
+        # Determine entry price from actual order fill whenever possible.
         entry_price = float(order_result.get("last_price_usd") or 0.0)
+        if asset_class == "equity":
+            fill_price = await self._get_equity_fill_price(symbol, order_id)
+            if fill_price > 0:
+                entry_price = fill_price
         if entry_price == 0.0 and asset_class == "equity":
             try:
                 import httpx as _httpx
@@ -704,6 +706,52 @@ class NewsTradeEngine:
             max_hold_minutes=consensus.get("max_hold_minutes", 60),
             order_id=order_id,
         )
+
+    async def _get_equity_fill_price(self, symbol: str, order_id: Optional[str]) -> float:
+        """
+        Best-effort fill price extraction for equity entries:
+        1) order.filled_avg_price
+        2) open position avg_entry_price
+        Returns 0.0 if unavailable.
+        """
+        if not order_id:
+            return 0.0
+        try:
+            from app.alpaca_trading import _find_open_position, _make_client
+
+            client = _make_client(self.config)
+
+            def _poll_fill() -> float:
+                import time
+
+                deadline = time.monotonic() + 15.0
+                while time.monotonic() < deadline:
+                    order = client.get_order_by_id(order_id)
+                    raw_fill = getattr(order, "filled_avg_price", None)
+                    if raw_fill is not None:
+                        try:
+                            val = float(raw_fill)
+                            if val > 0:
+                                return val
+                        except (TypeError, ValueError):
+                            pass
+                    pos = _find_open_position(client, symbol)
+                    if pos is not None:
+                        raw_entry = getattr(pos, "avg_entry_price", None)
+                        if raw_entry is not None:
+                            try:
+                                val = float(raw_entry)
+                                if val > 0:
+                                    return val
+                            except (TypeError, ValueError):
+                                pass
+                    time.sleep(1.0)
+                return 0.0
+
+            return float(await asyncio.to_thread(_poll_fill))
+        except Exception as exc:
+            print(f"[News] Could not poll fill price for {symbol}: {exc}", flush=True)
+            return 0.0
 
     async def _run_monitor(self, position: OpenNewsPosition) -> None:
         try:

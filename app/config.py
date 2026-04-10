@@ -12,6 +12,8 @@ load_dotenv()
 @dataclass(frozen=True)
 class AppConfig:
     stock_data_api_key: str
+    """Optional second TwelveData key; used when primary hits rate/credit errors."""
+    stock_data_api_key_secondary: Optional[str]
     openai_api_key: str
     google_api_key: str
     anthropic_api_key: str
@@ -127,8 +129,11 @@ class AppConfig:
         binance_secret_key = _parse_optional_str(os.getenv("BINANCE_SECRET_KEY"))
         binance_testnet = _parse_bool_default(os.getenv("BINANCE_TESTNET"), True)
 
+        stock_data_secondary = _parse_optional_str(os.getenv("STOCK_DATA_API_KEY_SECONDARY"))
+
         return AppConfig(
             stock_data_api_key=_required("STOCK_DATA_API_KEY"),
+            stock_data_api_key_secondary=stock_data_secondary,
             openai_api_key=_required("OPENAI_API_KEY"),
             google_api_key=_required("GOOGLE_API_KEY"),
             anthropic_api_key=_required("ANTHROPIC_API_KEY"),

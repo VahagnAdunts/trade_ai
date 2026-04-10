@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import List, Sequence
 
 import httpx
 
@@ -10,6 +10,35 @@ from app.models import OHLCVPoint
 
 TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
 TWELVE_DATA_QUOTE_URL = "https://api.twelvedata.com/quote"
+
+
+def _dedupe_keys(keys: Sequence[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for k in keys:
+        k = (k or "").strip()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(k)
+    return out
+
+
+def fetch_quote_close_sync_try_keys(symbol: str, *api_keys: str, timeout: float = 30.0) -> float:
+    """
+    Try TwelveData quote with first key, then fall back to additional keys on any error.
+    """
+    keys = _dedupe_keys(api_keys)
+    if not keys:
+        raise ValueError("No TwelveData API keys provided for quote")
+    last_exc: Exception | None = None
+    for key in keys:
+        try:
+            return fetch_quote_close_sync(symbol, key, timeout=timeout)
+        except Exception as exc:
+            last_exc = exc
+    assert last_exc is not None
+    raise last_exc
 
 
 def fetch_quote_close_sync(symbol: str, api_key: str, timeout: float = 30.0) -> float:
@@ -80,3 +109,40 @@ class TwelveDataClient:
         if not points:
             raise ValueError(f"No 30-day hourly data available for {symbol}")
         return points
+
+
+class TwelveDataMultiKeyClient:
+    """
+    Tries the first Twelve Data API key, then optional additional keys on any error
+    (rate limits, daily credits, etc.).
+    """
+
+    def __init__(
+        self,
+        *api_keys: str,
+        timeout: float = 30.0,
+        log_label: str = "[TwelveData]",
+    ) -> None:
+        self._keys = _dedupe_keys(api_keys)
+        if not self._keys:
+            raise ValueError("At least one Twelve Data API key is required")
+        self.timeout = timeout
+        self.log_label = log_label
+
+    async def fetch_hourly_30d(self, symbol: str) -> List[OHLCVPoint]:
+        last_exc: Exception | None = None
+        for i, key in enumerate(self._keys):
+            try:
+                client = TwelveDataClient(api_key=key, timeout=self.timeout)
+                return await client.fetch_hourly_30d(symbol)
+            except Exception as exc:
+                last_exc = exc
+                if i + 1 < len(self._keys):
+                    label = "primary" if i == 0 else "secondary"
+                    print(
+                        f"{self.log_label} {label} key failed for {symbol}: {exc} "
+                        f"— trying next key",
+                        flush=True,
+                    )
+        assert last_exc is not None
+        raise last_exc

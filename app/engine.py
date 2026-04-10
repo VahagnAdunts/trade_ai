@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from app.alpaca_pending import reconcile_pending_closes_on_startup
 from app.alpaca_trading import alpaca_consensus_round_trip, log_alpaca_account_health
 from app.config import AppConfig
-from app.data_provider import TwelveDataClient
+from app.data_provider import TwelveDataMultiKeyClient
 from app.features import build_feature_context, recent_bars_snapshot
 from app.llm_clients import ClaudeAnalyzer, GeminiAnalyzer, GrokAnalyzer, OpenAIAnalyzer
 from app.regime import build_market_regime_payload, load_regime_cache
@@ -212,7 +212,10 @@ async def run_analysis(
 ) -> Path:
     if config.alpaca_api_key_id and config.alpaca_api_secret_key:
         await reconcile_pending_closes_on_startup(config)
-    provider = TwelveDataClient(api_key=config.stock_data_api_key)
+    _td_keys = [config.stock_data_api_key]
+    if config.stock_data_api_key_secondary:
+        _td_keys.append(config.stock_data_api_key_secondary)
+    provider = TwelveDataMultiKeyClient(*_td_keys, log_label="[Engine]")
     if out_dir == "outputs" and crypto:
         out_dir = "outputs_crypto"
     output_dir = Path(out_dir)

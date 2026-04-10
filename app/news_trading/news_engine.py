@@ -36,7 +36,7 @@ def _nyse_is_open() -> bool:
     return open_min <= now_min < close_min
 
 from app.config import AppConfig
-from app.data_provider import TwelveDataClient
+from app.data_provider import TwelveDataMultiKeyClient
 from app.features import build_feature_context
 from app.llm_clients import ClaudeAnalyzer, GeminiAnalyzer, GrokAnalyzer, OpenAIAnalyzer
 from app.models import OHLCVPoint
@@ -449,7 +449,10 @@ class NewsTradeEngine:
                 raise ValueError(
                     f"Alpaca fetch failed for {symbol} and TwelveData key is missing"
                 ) from alpaca_exc
-            provider = TwelveDataClient(api_key=self.config.stock_data_api_key)
+            td_keys: List[str] = [self.config.stock_data_api_key]
+            if self.config.stock_data_api_key_secondary:
+                td_keys.append(self.config.stock_data_api_key_secondary)
+            provider = TwelveDataMultiKeyClient(*td_keys, log_label="[News]")
             points = await provider.fetch_hourly_30d(symbol)
             print(
                 f"[News] Historical source for {symbol}: TwelveData "

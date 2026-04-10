@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Protocol, Sequence
 
-from app.data_provider import TwelveDataClient
 from app.models import OHLCVPoint
+
+
+class _SupportsFetchHourly30d(Protocol):
+    async def fetch_hourly_30d(self, symbol: str) -> List[OHLCVPoint]: ...
+
 
 # Twelve Data: spot VIX index is not a valid time_series symbol on this API; VIXY is a real
 # CBOE-listed short-term VIX futures ETF (volatility regime proxy). Same hourly math as SPY/QQQ.
@@ -65,7 +69,7 @@ def _metrics_from_series(
     return base
 
 
-async def fetch_equity_benchmarks(client: TwelveDataClient) -> Dict[str, Any]:
+async def fetch_equity_benchmarks(client: _SupportsFetchHourly30d) -> Dict[str, Any]:
     """Fetch SPY, QQQ, VIX hourly series once per run. Failed symbols are recorded, not invented."""
 
     async def one(sym: str) -> tuple:
@@ -85,7 +89,7 @@ async def fetch_equity_benchmarks(client: TwelveDataClient) -> Dict[str, Any]:
     return out
 
 
-async def fetch_crypto_benchmarks(client: TwelveDataClient) -> Dict[str, Any]:
+async def fetch_crypto_benchmarks(client: _SupportsFetchHourly30d) -> Dict[str, Any]:
     async def one(sym: str) -> tuple:
         try:
             pts = await client.fetch_hourly_30d(sym)
@@ -202,7 +206,7 @@ def build_crypto_regime_payload(
     return payload
 
 
-async def load_regime_cache(client: TwelveDataClient, *, crypto: bool) -> Dict[str, Any]:
+async def load_regime_cache(client: _SupportsFetchHourly30d, *, crypto: bool) -> Dict[str, Any]:
     if crypto:
         return await fetch_crypto_benchmarks(client)
     return await fetch_equity_benchmarks(client)

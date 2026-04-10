@@ -10,7 +10,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
 
 from app.config import AppConfig
-from app.data_provider import fetch_quote_close_sync
+from app.data_provider import fetch_quote_close_sync_try_keys
 from app.telegram_notifier import TelegramConfig, send_telegram_message
 
 
@@ -177,7 +177,10 @@ def _submit_market_order(
         }
 
     notional = notional_usd
-    price = fetch_quote_close_sync(symbol, config.stock_data_api_key)
+    _quote_keys = [config.stock_data_api_key]
+    if config.stock_data_api_key_secondary:
+        _quote_keys.append(config.stock_data_api_key_secondary)
+    price = fetch_quote_close_sync_try_keys(symbol, *_quote_keys)
     if price <= 0:
         raise ValueError(f"Invalid quote price for {symbol}: {price}")
     shares = int(notional // price)

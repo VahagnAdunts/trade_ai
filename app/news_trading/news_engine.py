@@ -484,7 +484,13 @@ class NewsTradeEngine:
                 headers=headers,
                 params=params,
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                body_preview = (resp.text or "").strip().replace("\n", " ")
+                if len(body_preview) > 500:
+                    body_preview = body_preview[:500] + "...[truncated]"
+                raise ValueError(
+                    f"Alpaca bars error {resp.status_code} for {alpaca_symbol}: {body_preview}"
+                )
             payload = resp.json()
 
         rows = payload.get("bars") or []

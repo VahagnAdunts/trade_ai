@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
@@ -996,14 +997,28 @@ def _is_news_stale(news_item: dict) -> tuple[bool, float]:
     raw = news_item.get("published_at") or news_item.get("created_at") or ""
     if not raw:
         return True, -1.0
+    text = str(raw).strip()
+
+    # 1) ISO-like timestamps (Alpaca/Polygon/CryptoPanic)
+    published: Optional[datetime]
     try:
-        val = str(raw).strip().replace("Z", "+00:00")
-        published = datetime.fromisoformat(val)
-        if published.tzinfo is None:
-            published = published.replace(tzinfo=UTC)
-        published = published.astimezone(UTC)
-        now = datetime.now(UTC)
-        age_minutes = (now - published).total_seconds() / 60.0
-        return age_minutes > _MAX_NEWS_AGE_MINUTES, age_minutes
+        published = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except (ValueError, TypeError):
+        published = None
+
+    # 2) RFC2822/RSS timestamps (e.g., "Fri, 10 Apr 2026 15:20:19 GMT")
+    if published is None:
+        try:
+            published = parsedate_to_datetime(text)
+        except Exception:
+            published = None
+
+    if published is None:
         return True, -1.0
+
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=UTC)
+    published = published.astimezone(UTC)
+    now = datetime.now(UTC)
+    age_minutes = (now - published).total_seconds() / 60.0
+    return age_minutes > _MAX_NEWS_AGE_MINUTES, age_minutes

@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
+import httpx
+
 _ET = ZoneInfo("America/New_York")
 _NYSE_OPEN_HOUR, _NYSE_OPEN_MIN = 9, 30
 _NYSE_CLOSE_HOUR, _NYSE_CLOSE_MIN = 16, 0
@@ -36,6 +38,7 @@ from app.config import AppConfig
 from app.data_provider import TwelveDataClient
 from app.features import build_feature_context
 from app.llm_clients import ClaudeAnalyzer, GeminiAnalyzer, GrokAnalyzer, OpenAIAnalyzer
+from app.models import OHLCVPoint
 from app.regime import build_market_regime_payload, load_regime_cache
 from app.telegram_notifier import TelegramConfig, send_telegram_message
 from app.news_trading.event_classifier import EventClassification, classify_event
@@ -48,6 +51,7 @@ _HEADLINE_TTL_MINUTES = 30
 _COOLDOWN_MINUTES = 30
 _MAX_SYMBOLS_PER_EVENT = 3
 _SEMAPHORE_LIMIT = 5
+_HISTORICAL_LOOKBACK_DAYS = 30
 
 
 class NewsTradeEngine:
@@ -277,9 +281,9 @@ class NewsTradeEngine:
                     news_item.get("url", ""),
                 )
 
-            provider = TwelveDataClient(api_key=self.config.stock_data_api_key)
-            points = await provider.fetch_hourly_30d(symbol)
+            points = await self._fetch_hourly_30d_with_fallback(symbol)
             features = build_feature_context(symbol, points)
+            provider = _NewsHistoricalProvider(self)
             regime_cache = await load_regime_cache(
                 provider, crypto=(asset_class == "crypto")
             )
@@ -357,6 +361,91 @@ class NewsTradeEngine:
 
         except Exception as exc:
             print(f"[News] Error processing {symbol}: {exc}", flush=True)
+
+    async def _fetch_hourly_30d_with_fallback(self, symbol: str) -> List[OHLCVPoint]:
+        """
+        Primary source: Alpaca historical bars.
+        Fallback source: TwelveData historical bars.
+        """
+        try:
+            return await self._fetch_hourly_30d_alpaca(symbol)
+        except Exception as alpaca_exc:
+            print(
+                f"[News] Alpaca historical fetch failed for {symbol}: {alpaca_exc} "
+                f"— using TwelveData fallback",
+                flush=True,
+            )
+            if not self.config.stock_data_api_key:
+                raise ValueError(
+                    f"Alpaca fetch failed for {symbol} and TwelveData key is missing"
+                ) from alpaca_exc
+            provider = TwelveDataClient(api_key=self.config.stock_data_api_key)
+            points = await provider.fetch_hourly_30d(symbol)
+            print(
+                f"[News] Historical source for {symbol}: TwelveData "
+                f"(fallback, bars={len(points)})",
+                flush=True,
+            )
+            return points
+
+    async def _fetch_hourly_30d_alpaca(self, symbol: str) -> List[OHLCVPoint]:
+        if not self.config.alpaca_api_key_id or not self.config.alpaca_api_secret_key:
+            raise ValueError("Alpaca API credentials are missing")
+
+        end_dt = datetime.now(UTC)
+        start_dt = end_dt - timedelta(days=_HISTORICAL_LOOKBACK_DAYS)
+        headers = {
+            "APCA-API-KEY-ID": self.config.alpaca_api_key_id,
+            "APCA-API-SECRET-KEY": self.config.alpaca_api_secret_key,
+        }
+        params = {
+            "timeframe": "1Hour",
+            "start": start_dt.isoformat().replace("+00:00", "Z"),
+            "end": end_dt.isoformat().replace("+00:00", "Z"),
+            "limit": 1000,
+            "adjustment": "raw",
+            "sort": "asc",
+        }
+        alpaca_symbol = _normalize_alpaca_symbol(symbol)
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"https://data.alpaca.markets/v2/stocks/{alpaca_symbol}/bars",
+                headers=headers,
+                params=params,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+
+        rows = payload.get("bars") or []
+        if not rows:
+            raise ValueError(f"No Alpaca hourly bars returned for {symbol}")
+
+        points: List[OHLCVPoint] = []
+        for row in rows:
+            ts = row.get("t")
+            if not ts:
+                continue
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            points.append(
+                OHLCVPoint(
+                    datetime=dt,
+                    open=float(row.get("o", 0.0)),
+                    high=float(row.get("h", 0.0)),
+                    low=float(row.get("l", 0.0)),
+                    close=float(row.get("c", 0.0)),
+                    volume=float(row.get("v", 0.0)),
+                )
+            )
+
+        points.sort(key=lambda x: x.datetime)
+        if not points:
+            raise ValueError(f"No valid Alpaca hourly bars parsed for {symbol}")
+        print(
+            f"[News] Historical source for {symbol}: Alpaca (bars={len(points)})",
+            flush=True,
+        )
+        return points
 
     def _evaluate_entry_consensus(
         self, results: list, symbol: str
@@ -658,7 +747,25 @@ class NewsTradeEngine:
                 order_id = order_result.get("order_id")
 
         except Exception as exc:
+            if _is_trading_halt_error(exc):
+                print(
+                    f"[News] {symbol} order skipped: trading halt detected ({exc})",
+                    flush=True,
+                )
+                await self._notify_order_not_opened(
+                    symbol=symbol,
+                    reason="trading_halt",
+                    detail=str(exc),
+                    news_item=news_item,
+                )
+                return None
             print(f"[News] {symbol} order failed: {exc}", flush=True)
+            await self._notify_order_not_opened(
+                symbol=symbol,
+                reason="order_failed",
+                detail=str(exc),
+                news_item=news_item,
+            )
             return None
 
         # Determine entry price from actual order fill whenever possible.
@@ -772,3 +879,41 @@ class NewsTradeEngine:
             print(f"[News] Monitor error for {position.symbol}: {exc}", flush=True)
         finally:
             self._open_positions.pop(position.symbol, None)
+
+    async def _notify_order_not_opened(
+        self, symbol: str, reason: str, detail: str, news_item: dict
+    ) -> None:
+        headline = (news_item.get("headline") or "").strip()
+        url = (news_item.get("url") or "").strip()
+        url_line = f"\n🔗 {url}" if url else ""
+        msg = (
+            f"⚠️ NEWS TRADE NOT OPENED\n"
+            f"{symbol}\n"
+            f"Reason: {reason}\n"
+            f"Detail: {detail[:250]}"
+            f"{url_line}\n"
+            f"\nNews: \"{headline[:120]}\""
+        )
+        await send_telegram_message(self._telegram_cfg, msg)
+
+
+def _normalize_alpaca_symbol(symbol: str) -> str:
+    s = symbol.upper().strip()
+    if ":" in s:
+        s = s.split(":", 1)[-1]
+    return s.replace("/", "-")
+
+
+class _NewsHistoricalProvider:
+    """Adapter for regime loading: Alpaca primary, TwelveData fallback."""
+
+    def __init__(self, engine: NewsTradeEngine) -> None:
+        self._engine = engine
+
+    async def fetch_hourly_30d(self, symbol: str) -> List[OHLCVPoint]:
+        return await self._engine._fetch_hourly_30d_with_fallback(symbol)
+
+
+def _is_trading_halt_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "trading halt" in text or "halt on symbol" in text

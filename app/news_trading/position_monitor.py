@@ -106,6 +106,8 @@ class PositionMonitor:
                         f"[Monitor] {self.position.symbol} stop-loss confirm failed: {exc}",
                         flush=True,
                     )
+                    # Do not close on failed confirm — first snapshot may be a bad tick.
+                    continue
                 return await self._close_and_notify(
                     reason="stop_loss",
                     exit_price=snapshot.price,
@@ -133,6 +135,7 @@ class PositionMonitor:
                         f"[Monitor] {self.position.symbol} take-profit confirm failed: {exc}",
                         flush=True,
                     )
+                    continue
                 return await self._close_and_notify(
                     reason="take_profit",
                     exit_price=snapshot.price,
@@ -316,6 +319,7 @@ class PositionMonitor:
 
         # Always recalculate P&L from the actual fill price, not the snapshot
         # that triggered the close (they differ — snapshot is a quote estimate).
+        trigger_snapshot_pnl = pnl_pct
         pnl_pct = self._calculate_pnl_pct(actual_exit_price)
 
         pnl_usd = self.position.size_usd * pnl_pct / 100.0
@@ -326,6 +330,17 @@ class PositionMonitor:
             close_c = sum(1 for v in votes.values() if "close" in v)
             hold_c = sum(1 for v in votes.values() if "hold" in v)
             vote_line = f"\nLLM votes: {close_c} close, {hold_c} hold"
+
+        diverge_line = ""
+        if (
+            reason in ("stop_loss", "take_profit")
+            and trigger_snapshot_pnl is not None
+            and abs(pnl_pct - trigger_snapshot_pnl) > 0.15
+        ):
+            diverge_line = (
+                f"\n(Trigger snapshot P&L was {trigger_snapshot_pnl:+.2f}% "
+                f"vs fill {pnl_pct:+.2f}%)"
+            )
 
         msg = (
             f"📰 NEWS TRADE CLOSED\n"
@@ -338,6 +353,7 @@ class PositionMonitor:
             f"Held:  {minutes_held:.0f} minutes\n"
             f"\n"
             f"Reason: {reason}"
+            f"{diverge_line}"
             f"{vote_line}\n"
             f'\nNews: "{self.position.original_headline[:80]}"'
         )

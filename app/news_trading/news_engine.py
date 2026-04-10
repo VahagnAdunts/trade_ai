@@ -52,6 +52,7 @@ _COOLDOWN_MINUTES = 30
 _MAX_SYMBOLS_PER_EVENT = 3
 _SEMAPHORE_LIMIT = 5
 _HISTORICAL_LOOKBACK_DAYS = 30
+_MAX_NEWS_AGE_MINUTES = 15
 
 
 class NewsTradeEngine:
@@ -133,6 +134,7 @@ class NewsTradeEngine:
         headline = news_item.get("headline", "")
         symbols = list(news_item.get("symbols", []))
         asset_class = news_item.get("asset_class", "equity")
+        raw_published_at = str(news_item.get("published_at") or news_item.get("created_at") or "").strip()
 
         # Asset class gating
         if asset_class == "equity" and not self.config.news_equity_enabled:
@@ -152,6 +154,30 @@ class NewsTradeEngine:
             return
         self._seen_headlines[h] = now
         self._cleanup_seen_headlines(now)
+
+        # Staleness protection based on actual publication timestamp.
+        is_stale, age_minutes = _is_news_stale(news_item)
+        if age_minutes >= 0:
+            print(
+                f"[News][TimeDebug] published_at_raw='{raw_published_at}' "
+                f"age_min={age_minutes:.2f} stale={is_stale}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[News][TimeDebug] published_at_raw='{raw_published_at}' "
+                f"age_min=parse_failed stale=True",
+                flush=True,
+            )
+        if is_stale:
+            if age_minutes >= 0:
+                print(
+                    f"[News] STALE ({age_minutes:.0f}min old) — skipped: {headline[:80]}",
+                    flush=True,
+                )
+            else:
+                print(f"[News] NO TIMESTAMP — skipped: {headline[:80]}", flush=True)
+            return
 
         # Keyword classify for direction hint; no longer used as a gate
         classification = classify_event(headline, symbols, asset_class)
@@ -181,7 +207,7 @@ class NewsTradeEngine:
             if self._in_cooldown(symbol):
                 print(f"[News] {symbol} in cooldown — skip", flush=True)
                 continue
-            news_item_copy = {**news_item, "symbol": symbol}
+            news_item_copy = {**news_item, "symbol": symbol, "age_minutes": age_minutes}
             asyncio.create_task(
                 self._process_event_guarded(classification, news_item_copy)
             )
@@ -269,6 +295,7 @@ class NewsTradeEngine:
     ) -> None:
         symbol = news_item.get("symbol", "")
         asset_class = news_item.get("asset_class", "equity")
+        age_minutes = float(news_item.get("age_minutes", -1.0))
         if not symbol:
             return
 
@@ -290,6 +317,15 @@ class NewsTradeEngine:
             market_regime = build_market_regime_payload(
                 symbol, points, regime_cache, crypto=(asset_class == "crypto")
             )
+
+            # Price reaction guard: skip if likely already priced in.
+            if await self._is_already_priced_in(
+                symbol=symbol,
+                side_hint=classification.direction_hint,
+                asset_class=asset_class,
+                age_minutes=age_minutes,
+            ):
+                return
 
             sys_prompt, user_msg = build_news_entry_prompt(
                 symbol=symbol,
@@ -361,6 +397,39 @@ class NewsTradeEngine:
 
         except Exception as exc:
             print(f"[News] Error processing {symbol}: {exc}", flush=True)
+
+    async def _is_already_priced_in(
+        self,
+        symbol: str,
+        side_hint: str,
+        asset_class: str,
+        age_minutes: float,
+    ) -> bool:
+        """
+        Detect if market likely already reacted to this news.
+        """
+        try:
+            snapshot = await self._price_feed.get_snapshot(symbol, asset_class, self.config)
+            move_pct = abs(snapshot.momentum_5m_pct)
+
+            if move_pct > 5.0:
+                print(
+                    f"[News] {symbol} already moved {move_pct:+.2f}% — "
+                    f"news likely priced in (age={age_minutes:.0f}min, hint={side_hint})",
+                    flush=True,
+                )
+                return True
+
+            if age_minutes > 5 and move_pct > 3.0:
+                print(
+                    f"[News] {symbol} moved {move_pct:+.2f}% on {age_minutes:.0f}min-old news "
+                    f"(hint={side_hint}) — skip",
+                    flush=True,
+                )
+                return True
+        except Exception as exc:
+            print(f"[News] Could not check price reaction for {symbol}: {exc}", flush=True)
+        return False
 
     async def _fetch_hourly_30d_with_fallback(self, symbol: str) -> List[OHLCVPoint]:
         """
@@ -917,3 +986,24 @@ class _NewsHistoricalProvider:
 def _is_trading_halt_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return "trading halt" in text or "halt on symbol" in text
+
+
+def _is_news_stale(news_item: dict) -> tuple[bool, float]:
+    """
+    Returns (is_stale, age_minutes) using published_at from the payload.
+    If missing/unparseable, treat as stale.
+    """
+    raw = news_item.get("published_at") or news_item.get("created_at") or ""
+    if not raw:
+        return True, -1.0
+    try:
+        val = str(raw).strip().replace("Z", "+00:00")
+        published = datetime.fromisoformat(val)
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=UTC)
+        published = published.astimezone(UTC)
+        now = datetime.now(UTC)
+        age_minutes = (now - published).total_seconds() / 60.0
+        return age_minutes > _MAX_NEWS_AGE_MINUTES, age_minutes
+    except (ValueError, TypeError):
+        return True, -1.0

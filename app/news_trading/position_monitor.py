@@ -38,6 +38,9 @@ class OpenNewsPosition:
 class PositionMonitor:
     # Hardcoded — do not make configurable
     MONITOR_INTERVAL_SECONDS = 300  # 5 minutes
+    FIXED_STOP_LOSS_PCT = 0.5
+    FIXED_TAKE_PROFIT_PCT = 1.0
+    FIXED_MAX_HOLD_MINUTES = 20
 
     def __init__(
         self,
@@ -63,7 +66,7 @@ class PositionMonitor:
             ).total_seconds() / 60.0
 
             # 1. Hard time limit
-            if minutes_held >= self.position.max_hold_minutes:
+            if minutes_held >= self.FIXED_MAX_HOLD_MINUTES:
                 return await self._close_and_notify(
                     reason="timeout",
                     exit_price=None,
@@ -87,7 +90,7 @@ class PositionMonitor:
             pnl_pct = self._calculate_pnl_pct(snapshot.price)
 
             # 3. Stop loss
-            if pnl_pct <= -self.config.news_stop_loss_pct:
+            if pnl_pct <= -self.FIXED_STOP_LOSS_PCT:
                 # Confirm with a fresh (non-cached) snapshot to avoid false triggers.
                 try:
                     confirm_snapshot = await self.price_feed.get_snapshot(
@@ -97,13 +100,13 @@ class PositionMonitor:
                         force_refresh=True,
                     )
                     confirm_pnl = self._calculate_pnl_pct(confirm_snapshot.price)
-                    if confirm_pnl > -self.config.news_stop_loss_pct:
+                    if confirm_pnl > -self.FIXED_STOP_LOSS_PCT:
                         continue
                     snapshot = confirm_snapshot
                     pnl_pct = confirm_pnl
                 except Exception as exc:
                     print(
-                        f"[Monitor] {self.position.symbol} stop-loss confirm failed: {exc}",
+                        f"[Monitor] {self.position.symbol} stop confirm failed: {exc}",
                         flush=True,
                     )
                     # Do not close on failed confirm — first snapshot may be a bad tick.
@@ -116,7 +119,7 @@ class PositionMonitor:
                 )
 
             # 4. Take profit
-            if pnl_pct >= self.config.news_take_profit_pct:
+            if pnl_pct >= self.FIXED_TAKE_PROFIT_PCT:
                 # Confirm with a fresh (non-cached) snapshot to avoid false triggers.
                 try:
                     confirm_snapshot = await self.price_feed.get_snapshot(
@@ -126,7 +129,7 @@ class PositionMonitor:
                         force_refresh=True,
                     )
                     confirm_pnl = self._calculate_pnl_pct(confirm_snapshot.price)
-                    if confirm_pnl < self.config.news_take_profit_pct:
+                    if confirm_pnl < self.FIXED_TAKE_PROFIT_PCT:
                         continue
                     snapshot = confirm_snapshot
                     pnl_pct = confirm_pnl
@@ -143,32 +146,18 @@ class PositionMonitor:
                     pnl_pct=pnl_pct,
                 )
 
-            # 5. Ask LLMs whether to hold or close
-            decision, vote_breakdown, sys_prompt, user_msg, raw_results = (
-                await self._ask_llms_exit_decision(snapshot, pnl_pct, minutes_held)
-            )
-
             print(
                 f"[Monitor] {self.position.symbol} {self.position.side.upper()} "
                 f"pnl={pnl_pct:+.2f}% held={minutes_held:.0f}min "
-                f"decision={decision} votes={vote_breakdown}",
+                f"sl={self.FIXED_STOP_LOSS_PCT:.2f}% tp={self.FIXED_TAKE_PROFIT_PCT:.2f}%",
                 flush=True,
             )
 
-            # Send monitoring update to Telegram with prompt + per-model results
             await self._notify_monitor_update(
-                snapshot, pnl_pct, minutes_held, decision,
-                vote_breakdown, raw_results, sys_prompt, user_msg,
+                snapshot=snapshot,
+                pnl_pct=pnl_pct,
+                minutes_held=minutes_held,
             )
-
-            if decision == "close":
-                return await self._close_and_notify(
-                    reason="llm_exit",
-                    exit_price=snapshot.price,
-                    minutes_held=minutes_held,
-                    pnl_pct=pnl_pct,
-                    votes=vote_breakdown,
-                )
             # Hold — continue to next iteration
 
     async def _ask_llms_exit_decision(
@@ -232,41 +221,20 @@ class PositionMonitor:
         snapshot: PriceSnapshot,
         pnl_pct: float,
         minutes_held: float,
-        decision: str,
-        vote_breakdown: Dict[str, str],
-        raw_results: list,
-        sys_prompt: str,
-        user_msg: str,
     ) -> None:
         sym = self.position.symbol
         side = self.position.side.upper()
-        decision_emoji = "✅ HOLD" if decision == "hold" else "🔴 CLOSE"
-
-        # Per-model vote + thinking
-        model_lines = []
-        for (label, _), result in zip(self.llm_clients, raw_results):
-            if isinstance(result, Exception):
-                model_lines.append(f"{label}: ERR — {result}")
-                continue
-            d = result.get("decision", "hold")
-            u = result.get("urgency", "normal")
-            thinking = (result.get("thinking") or "").strip()[:200]
-            thinking_line = f"\n  💭 {thinking}" if thinking else ""
-            model_lines.append(f"{label}: {d}/{u}{thinking_line}")
 
         msg1 = (
             f"📊 MONITOR UPDATE — {sym} {side}\n"
             f"{'─'*30}\n"
             f"Price:  ${snapshot.price:.4f}  (entry ${self.position.entry_price:.4f})\n"
             f"P&L:    {pnl_pct:+.2f}%\n"
-            f"Held:   {minutes_held:.0f} min / {self.position.max_hold_minutes} min max\n"
+            f"Rules:  SL {self.FIXED_STOP_LOSS_PCT:.2f}% | TP {self.FIXED_TAKE_PROFIT_PCT:.2f}%\n"
+            f"Held:   {minutes_held:.0f} min / {self.FIXED_MAX_HOLD_MINUTES} min max\n"
             f"RSI:    {snapshot.rsi_current:.1f}\n"
             f"Mom5m:  {snapshot.momentum_5m_pct:+.3f}%\n"
             f"Vol×:   {snapshot.volume_ratio:.1f}x\n"
-            f"\n"
-            f"Decision: {decision_emoji}\n"
-            f"\nPer model:\n"
-            + "\n".join(model_lines)
         )
         await send_telegram_message(self.telegram_cfg, msg1)
 

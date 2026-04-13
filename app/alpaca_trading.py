@@ -43,6 +43,22 @@ def _normalize_pair_key(symbol: str) -> str:
     return "".join(c for c in symbol.upper() if c.isalnum())
 
 
+def _alpaca_equity_price_tick(price: float) -> float:
+    """
+    Alpaca equity minimum pricing increment:
+    - >= $1.00 -> $0.01 (penny)
+    - <  $1.00 -> $0.0001
+    """
+    return 0.01 if price >= 1.0 else 0.0001
+
+
+def _quantize_equity_price(price: float) -> float:
+    tick = _alpaca_equity_price_tick(price)
+    if tick == 0.01:
+        return round(price, 2)
+    return round(price, 4)
+
+
 def _find_open_position(client: TradingClient, symbol: str) -> Any:
     """
     Find the open Position for this symbol. Alpaca may use BTC/USD, BTCUSD, etc.;
@@ -207,11 +223,11 @@ def _submit_market_order(
     }
     if stop_loss_pct is not None and take_profit_pct is not None:
         if side == "long":
-            tp_price = round(price * (1.0 + take_profit_pct / 100.0), 4)
-            sl_price = round(price * (1.0 - stop_loss_pct / 100.0), 4)
+            tp_price = _quantize_equity_price(price * (1.0 + take_profit_pct / 100.0))
+            sl_price = _quantize_equity_price(price * (1.0 - stop_loss_pct / 100.0))
         else:
-            tp_price = round(price * (1.0 - take_profit_pct / 100.0), 4)
-            sl_price = round(price * (1.0 + stop_loss_pct / 100.0), 4)
+            tp_price = _quantize_equity_price(price * (1.0 - take_profit_pct / 100.0))
+            sl_price = _quantize_equity_price(price * (1.0 + stop_loss_pct / 100.0))
         req_kwargs["order_class"] = OrderClass.BRACKET
         req_kwargs["take_profit"] = TakeProfitRequest(limit_price=tp_price)
         req_kwargs["stop_loss"] = StopLossRequest(stop_price=sl_price)

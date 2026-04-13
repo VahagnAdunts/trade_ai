@@ -54,6 +54,10 @@ class AppConfig:
     binance_api_key: Optional[str]
     binance_secret_key: Optional[str]
     binance_testnet: bool
+    # ── News source mode: "alpaca" (default), "x_stream", or "both" ────────────
+    news_source_mode: str
+    x_bearer_token: Optional[str]
+    news_truth_social_enabled: bool
 
     @staticmethod
     def from_env() -> "AppConfig":
@@ -131,6 +135,14 @@ class AppConfig:
 
         stock_data_secondary = _parse_optional_str(os.getenv("STOCK_DATA_API_KEY_SECONDARY"))
 
+        news_source_mode_raw = (os.getenv("NEWS_SOURCE_MODE") or "alpaca").strip().lower()
+        if news_source_mode_raw not in ("alpaca", "x_stream", "both"):
+            news_source_mode_raw = "alpaca"
+        x_bearer_token = _parse_optional_str(os.getenv("X_BEARER_TOKEN"))
+        news_truth_social_enabled = _parse_bool_default(
+            os.getenv("NEWS_TRUTH_SOCIAL_ENABLED"), False
+        )
+
         return AppConfig(
             stock_data_api_key=_required("STOCK_DATA_API_KEY"),
             stock_data_api_key_secondary=stock_data_secondary,
@@ -173,6 +185,9 @@ class AppConfig:
             binance_api_key=binance_api_key,
             binance_secret_key=binance_secret_key,
             binance_testnet=binance_testnet,
+            news_source_mode=news_source_mode_raw,
+            x_bearer_token=x_bearer_token,
+            news_truth_social_enabled=news_truth_social_enabled,
         )
 
 

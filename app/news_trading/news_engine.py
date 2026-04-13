@@ -80,41 +80,54 @@ class NewsTradeEngine:
 
     async def start(self) -> None:
         self._running = True
-        print("[News] Engine starting...", flush=True)
+        mode = self.config.news_source_mode
+        print(f"[News] Engine starting... (source_mode={mode})", flush=True)
 
         sources = []
 
-        # Alpaca news WebSocket
-        if self.config.news_alpaca_news_enabled and self.config.alpaca_api_key_id:
-            from app.news_trading.news_sources.alpaca_news import create_alpaca_news_stream
-            stream = create_alpaca_news_stream(
-                self.config.alpaca_api_key_id,
-                self.config.alpaca_api_secret_key,
-                self._on_news_item,
-            )
-            if stream:
-                sources.append(stream.start())
+        use_alpaca = mode in ("alpaca", "both")
+        use_x = mode in ("x_stream", "both")
 
-        # Polygon REST polling
-        if self.config.news_polygon_api_key:
-            from app.news_trading.news_sources.polygon_news import create_polygon_feed
-            feed = create_polygon_feed(self.config.news_polygon_api_key, self._on_news_item)
-            if feed:
-                sources.append(feed.start())
+        # ── Traditional news sources (mode=alpaca or both) ──
+        if use_alpaca:
+            if self.config.news_alpaca_news_enabled and self.config.alpaca_api_key_id:
+                from app.news_trading.news_sources.alpaca_news import create_alpaca_news_stream
+                stream = create_alpaca_news_stream(
+                    self.config.alpaca_api_key_id,
+                    self.config.alpaca_api_secret_key,
+                    self._on_news_item,
+                )
+                if stream:
+                    sources.append(stream.start())
 
-        # CryptoPanic
-        if self.config.news_crypto_enabled and self.config.news_crypto_panic_api_key:
-            from app.news_trading.news_sources.crypto_panic import create_crypto_panic_feed
-            cpanic = create_crypto_panic_feed(
-                self.config.news_crypto_panic_api_key, self._on_news_item
-            )
-            if cpanic:
-                sources.append(cpanic.start())
+            if self.config.news_polygon_api_key:
+                from app.news_trading.news_sources.polygon_news import create_polygon_feed
+                feed = create_polygon_feed(self.config.news_polygon_api_key, self._on_news_item)
+                if feed:
+                    sources.append(feed.start())
 
-        # RSS fallback
-        from app.news_trading.news_sources.rss_scraper import create_rss_scraper
-        rss = create_rss_scraper(self._on_news_item)
-        sources.append(rss.start())
+            if self.config.news_crypto_enabled and self.config.news_crypto_panic_api_key:
+                from app.news_trading.news_sources.crypto_panic import create_crypto_panic_feed
+                cpanic = create_crypto_panic_feed(
+                    self.config.news_crypto_panic_api_key, self._on_news_item
+                )
+                if cpanic:
+                    sources.append(cpanic.start())
+
+            from app.news_trading.news_sources.rss_scraper import create_rss_scraper
+            rss = create_rss_scraper(self._on_news_item)
+            sources.append(rss.start())
+
+        # ── X / Twitter + Truth Social sources (mode=x_stream or both) ──
+        if use_x:
+            from app.news_trading.news_sources.x_monitor import create_x_monitor
+            x_mon = create_x_monitor(self._on_news_item)
+            sources.append(x_mon.start())
+
+            if self.config.news_truth_social_enabled:
+                from app.news_trading.news_sources.truth_social import create_truth_social_monitor
+                ts_mon = create_truth_social_monitor(self._on_news_item)
+                sources.append(ts_mon.start())
 
         if not sources:
             print("[News] WARNING: No news sources configured. Check your .env.", flush=True)
@@ -124,7 +137,6 @@ class NewsTradeEngine:
         if sources:
             await asyncio.gather(*sources, return_exceptions=True)
         else:
-            # Keep alive even with no sources
             while self._running:
                 await asyncio.sleep(60)
 
@@ -184,16 +196,23 @@ class NewsTradeEngine:
         classification = classify_event(headline, symbols, asset_class)
 
         # If no symbols were tagged by the source, use fast LLM to extract one
+        source = (news_item.get("source") or "").strip()
         if not symbols:
             fast = await self._fast_llm_classify(headline, news_item.get("summary", ""))
             if not fast.get("is_relevant") or not fast.get("symbol"):
                 return  # truly irrelevant
             symbols = [fast["symbol"].upper()]
-            # Patch into classification so direction_hint and category are available
             classification = classify_event(headline, symbols, asset_class)
             print(
                 f"[News] Fast LLM identified symbol {symbols[0]} — {fast.get('reason', '')}",
                 flush=True,
+            )
+            await self._notify_new_post(
+                headline=headline,
+                source=source,
+                symbol=symbols[0],
+                reason=fast.get("reason", ""),
+                url=news_item.get("url", ""),
             )
 
         print(
@@ -571,6 +590,25 @@ class NewsTradeEngine:
             "per_model": per_model,
             "supporter_count": len(supporters),
         }
+
+    async def _notify_new_post(
+        self,
+        headline: str,
+        source: str,
+        symbol: str,
+        reason: str,
+        url: str,
+    ) -> None:
+        url_line = f"\n🔗 {url}" if url else ""
+        msg = (
+            f"🐦 NEW POST DETECTED\n"
+            f"Source: {source}\n"
+            f"Symbol: {symbol}\n"
+            f'"{headline[:200]}"'
+            f"\nLLM reason: {reason[:200]}"
+            f"{url_line}"
+        )
+        await send_telegram_message(self._telegram_cfg, msg)
 
     async def _notify_analysis_started(
         self,

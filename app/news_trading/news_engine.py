@@ -808,6 +808,8 @@ class NewsTradeEngine:
                     self.config,
                     self.config.news_trade_dollars,
                     crypto=False,
+                    stop_loss_pct=PositionMonitor.FIXED_STOP_LOSS_PCT,
+                    take_profit_pct=PositionMonitor.FIXED_TAKE_PROFIT_PCT,
                 )
                 if order_result.get("skipped"):
                     print(

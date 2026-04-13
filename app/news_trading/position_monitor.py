@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import AppConfig
-from app.news_trading.news_prompt import build_news_exit_prompt
 from app.news_trading.realtime_feed import PriceSnapshot, RealtimePriceFeed
 from app.telegram_notifier import TelegramConfig, send_telegram_message
 
@@ -38,8 +37,6 @@ class OpenNewsPosition:
 class PositionMonitor:
     # Hardcoded — do not make configurable
     MONITOR_INTERVAL_SECONDS = 300  # 5 minutes
-    FIXED_STOP_LOSS_PCT = 0.5
-    FIXED_TAKE_PROFIT_PCT = 1.0
     FIXED_MAX_HOLD_MINUTES = 20
 
     def __init__(
@@ -67,13 +64,19 @@ class PositionMonitor:
 
             # 1. Hard time limit
             if minutes_held >= self.FIXED_MAX_HOLD_MINUTES:
+                if self.position.asset_class == "equity" and not await self._is_equity_position_open():
+                    return await self._notify_already_closed(
+                        minutes_held=minutes_held,
+                        current_price=self.position.entry_price,
+                        pnl_pct=0.0,
+                    )
                 return await self._close_and_notify(
                     reason="timeout",
                     exit_price=None,
                     minutes_held=minutes_held,
                 )
 
-            # 2. Fetch price snapshot
+            # 2. Fetch price snapshot (for status only)
             try:
                 snapshot = await self.price_feed.get_snapshot(
                     self.position.symbol,
@@ -89,67 +92,14 @@ class PositionMonitor:
 
             pnl_pct = self._calculate_pnl_pct(snapshot.price)
 
-            # 3. Stop loss
-            if pnl_pct <= -self.FIXED_STOP_LOSS_PCT:
-                # Confirm with a fresh (non-cached) snapshot to avoid false triggers.
-                try:
-                    confirm_snapshot = await self.price_feed.get_snapshot(
-                        self.position.symbol,
-                        self.position.asset_class,
-                        self.config,
-                        force_refresh=True,
-                    )
-                    confirm_pnl = self._calculate_pnl_pct(confirm_snapshot.price)
-                    if confirm_pnl > -self.FIXED_STOP_LOSS_PCT:
-                        continue
-                    snapshot = confirm_snapshot
-                    pnl_pct = confirm_pnl
-                except Exception as exc:
-                    print(
-                        f"[Monitor] {self.position.symbol} stop confirm failed: {exc}",
-                        flush=True,
-                    )
-                    # Do not close on failed confirm — first snapshot may be a bad tick.
-                    continue
-                return await self._close_and_notify(
-                    reason="stop_loss",
-                    exit_price=snapshot.price,
-                    minutes_held=minutes_held,
-                    pnl_pct=pnl_pct,
-                )
-
-            # 4. Take profit
-            if pnl_pct >= self.FIXED_TAKE_PROFIT_PCT:
-                # Confirm with a fresh (non-cached) snapshot to avoid false triggers.
-                try:
-                    confirm_snapshot = await self.price_feed.get_snapshot(
-                        self.position.symbol,
-                        self.position.asset_class,
-                        self.config,
-                        force_refresh=True,
-                    )
-                    confirm_pnl = self._calculate_pnl_pct(confirm_snapshot.price)
-                    if confirm_pnl < self.FIXED_TAKE_PROFIT_PCT:
-                        continue
-                    snapshot = confirm_snapshot
-                    pnl_pct = confirm_pnl
-                except Exception as exc:
-                    print(
-                        f"[Monitor] {self.position.symbol} take-profit confirm failed: {exc}",
-                        flush=True,
-                    )
-                    continue
-                return await self._close_and_notify(
-                    reason="take_profit",
-                    exit_price=snapshot.price,
-                    minutes_held=minutes_held,
-                    pnl_pct=pnl_pct,
-                )
+            # If broker-side bracket already closed the equity position, stop monitoring.
+            if self.position.asset_class == "equity" and not await self._is_equity_position_open():
+                return await self._notify_already_closed(minutes_held, snapshot.price, pnl_pct)
 
             print(
                 f"[Monitor] {self.position.symbol} {self.position.side.upper()} "
                 f"pnl={pnl_pct:+.2f}% held={minutes_held:.0f}min "
-                f"sl={self.FIXED_STOP_LOSS_PCT:.2f}% tp={self.FIXED_TAKE_PROFIT_PCT:.2f}%",
+                f"rule=timeout_only",
                 flush=True,
             )
 
@@ -159,62 +109,6 @@ class PositionMonitor:
                 minutes_held=minutes_held,
             )
             # Hold — continue to next iteration
-
-    async def _ask_llms_exit_decision(
-        self,
-        snapshot: PriceSnapshot,
-        pnl_pct: float,
-        minutes_held: float,
-    ) -> Tuple[str, Dict[str, str], str, str, list]:
-        sys_prompt, user_msg = build_news_exit_prompt(
-            symbol=self.position.symbol,
-            side=self.position.side,
-            entry_price=self.position.entry_price,
-            current_price=snapshot.price,
-            pnl_pct=pnl_pct,
-            minutes_held=minutes_held,
-            original_headline=self.position.original_headline,
-            original_thinking=self.position.original_thinking,
-            invalidation_condition=self.position.invalidation_condition,
-            current_rsi=snapshot.rsi_current,
-            price_momentum_5m=snapshot.momentum_5m_pct,
-            volume_ratio=snapshot.volume_ratio,
-        )
-
-        results = await asyncio.gather(
-            *[
-                asyncio.to_thread(analyzer.quick_exit_decision, sys_prompt, user_msg)
-                for _, analyzer in self.llm_clients
-            ],
-            return_exceptions=True,
-        )
-
-        close_votes = 0
-        urgent_votes = 0
-        hold_votes = 0
-        vote_breakdown: Dict[str, str] = {}
-
-        for (label, _), result in zip(self.llm_clients, results):
-            if isinstance(result, Exception):
-                vote_breakdown[label] = "error"
-                continue
-            decision_val = result.get("decision", "hold")
-            urgency_val = result.get("urgency", "normal")
-            vote_breakdown[label] = f"{decision_val}/{urgency_val}"
-            if decision_val == "close":
-                close_votes += 1
-                if urgency_val == "urgent":
-                    urgent_votes += 1
-            else:
-                hold_votes += 1
-
-        # Urgent override: 2+ urgent AND 2+ close
-        if urgent_votes >= 2 and close_votes >= 2:
-            return "close", vote_breakdown, sys_prompt, user_msg, list(results)
-        # Normal 3-of-4 consensus
-        if close_votes >= 3:
-            return "close", vote_breakdown, sys_prompt, user_msg, list(results)
-        return "hold", vote_breakdown, sys_prompt, user_msg, list(results)
 
     async def _notify_monitor_update(
         self,
@@ -230,13 +124,54 @@ class PositionMonitor:
             f"{'─'*30}\n"
             f"Price:  ${snapshot.price:.4f}  (entry ${self.position.entry_price:.4f})\n"
             f"P&L:    {pnl_pct:+.2f}%\n"
-            f"Rules:  SL {self.FIXED_STOP_LOSS_PCT:.2f}% | TP {self.FIXED_TAKE_PROFIT_PCT:.2f}%\n"
+            f"Rules:  Broker SL/TP at entry | timeout close only\n"
             f"Held:   {minutes_held:.0f} min / {self.FIXED_MAX_HOLD_MINUTES} min max\n"
             f"RSI:    {snapshot.rsi_current:.1f}\n"
             f"Mom5m:  {snapshot.momentum_5m_pct:+.3f}%\n"
             f"Vol×:   {snapshot.volume_ratio:.1f}x\n"
         )
         await send_telegram_message(self.telegram_cfg, msg1)
+
+    async def _is_equity_position_open(self) -> bool:
+        try:
+            from app.alpaca_trading import _find_open_position, _make_client
+            client = _make_client(self.config)
+            pos = await asyncio.to_thread(_find_open_position, client, self.position.symbol)
+            return pos is not None
+        except Exception as exc:
+            print(f"[Monitor] {self.position.symbol} open-position check failed: {exc}", flush=True)
+            # Fail-open: keep monitoring rather than accidentally stopping.
+            return True
+
+    async def _notify_already_closed(
+        self,
+        minutes_held: float,
+        current_price: float,
+        pnl_pct: float,
+    ) -> Dict[str, Any]:
+        msg = (
+            f"📰 NEWS TRADE CLOSED\n"
+            f"{self.position.symbol} {self.position.side.upper()} [{self.position.asset_class}]\n\n"
+            f"Entry: ${self.position.entry_price:.4f}\n"
+            f"Ref px: ${current_price:.4f}\n"
+            f"P&L:   {pnl_pct:+.2f}% (reference)\n"
+            f"Held:  {minutes_held:.0f} minutes\n\n"
+            f"Reason: broker_tp_sl\n"
+            f'\nNews: "{self.position.original_headline[:80]}"'
+        )
+        await send_telegram_message(self.telegram_cfg, msg)
+        return {
+            "symbol": self.position.symbol,
+            "side": self.position.side,
+            "reason": "broker_tp_sl",
+            "entry_price": self.position.entry_price,
+            "exit_price": current_price,
+            "pnl_pct": pnl_pct,
+            "pnl_usd": self.position.size_usd * pnl_pct / 100.0,
+            "minutes_held": minutes_held,
+            "votes": None,
+            "close_result": {"broker_managed": True},
+        }
 
     def _calculate_pnl_pct(self, current_price: float) -> float:
         if self.position.entry_price == 0:

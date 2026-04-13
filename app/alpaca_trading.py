@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest, StopLossRequest, TakeProfitRequest
 
 from app.config import AppConfig
 from app.data_provider import fetch_quote_close_sync_try_keys
@@ -124,6 +124,8 @@ def _submit_market_order(
     notional_usd: float,
     *,
     crypto: bool = False,
+    stop_loss_pct: Optional[float] = None,
+    take_profit_pct: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Equity long: notional (fractional $), TIF day. Equity short: whole-share qty from quote.
@@ -160,7 +162,7 @@ def _submit_market_order(
             "asset_class": "crypto",
         }
 
-    if side == "long":
+    if side == "long" and (stop_loss_pct is None or take_profit_pct is None):
         req = MarketOrderRequest(
             symbol=alpaca_sym,
             notional=notional_usd,
@@ -197,12 +199,24 @@ def _submit_market_order(
             "symbol": alpaca_sym,
         }
 
-    req = MarketOrderRequest(
-        symbol=alpaca_sym,
-        qty=float(shares),
-        side=order_side,
-        time_in_force=TimeInForce.DAY,
-    )
+    req_kwargs: Dict[str, Any] = {
+        "symbol": alpaca_sym,
+        "qty": float(shares),
+        "side": order_side,
+        "time_in_force": TimeInForce.DAY,
+    }
+    if stop_loss_pct is not None and take_profit_pct is not None:
+        if side == "long":
+            tp_price = round(price * (1.0 + take_profit_pct / 100.0), 4)
+            sl_price = round(price * (1.0 - stop_loss_pct / 100.0), 4)
+        else:
+            tp_price = round(price * (1.0 - take_profit_pct / 100.0), 4)
+            sl_price = round(price * (1.0 + stop_loss_pct / 100.0), 4)
+        req_kwargs["order_class"] = OrderClass.BRACKET
+        req_kwargs["take_profit"] = TakeProfitRequest(limit_price=tp_price)
+        req_kwargs["stop_loss"] = StopLossRequest(stop_price=sl_price)
+
+    req = MarketOrderRequest(**req_kwargs)
     order = client.submit_order(req)
     return {
         "skipped": False,
@@ -212,6 +226,7 @@ def _submit_market_order(
         "notional_budget_usd": notional,
         "last_price_usd": price,
         "order_status": _order_status(order),
+        "bracket_enabled": bool(stop_loss_pct is not None and take_profit_pct is not None),
     }
 
 

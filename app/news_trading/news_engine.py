@@ -155,11 +155,6 @@ class NewsTradeEngine:
         if asset_class == "crypto" and not self.config.news_crypto_enabled:
             return
 
-        # Only trade equities during NYSE regular session (Mon–Fri 09:30–16:00 ET)
-        # Crypto is 24/7 so no session gate applied
-        if asset_class == "equity" and not _nyse_is_open():
-            return
-
         # Deduplicate — MD5 of lowercase headline, TTL 30 minutes
         h = hashlib.md5(headline.lower().encode()).hexdigest()
         now = datetime.now(UTC)
@@ -214,6 +209,14 @@ class NewsTradeEngine:
                 reason=fast.get("reason", ""),
                 url=news_item.get("url", ""),
             )
+
+        # Full LLM consensus and trades only during NYSE RTH for equities (crypto 24/7)
+        if asset_class == "equity" and not _nyse_is_open():
+            print(
+                f"[News] NYSE closed — skipping analysis/trades (symbols={symbols[:3]})",
+                flush=True,
+            )
+            return
 
         print(
             f"[News] Event ({classification.impact}): {headline[:100]}",
@@ -607,7 +610,12 @@ class NewsTradeEngine:
             f"\nLLM reason: {reason[:200]}"
             f"{url_line}"
         )
-        await send_telegram_message(self._telegram_cfg, msg)
+        ok, err = await send_telegram_message(self._telegram_cfg, msg)
+        if not ok:
+            print(
+                f"[News] Telegram new-post notify failed: {err or 'telegram disabled'}",
+                flush=True,
+            )
 
     async def _notify_analysis_started(
         self,

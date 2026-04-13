@@ -37,6 +37,8 @@ class OpenNewsPosition:
 class PositionMonitor:
     # Hardcoded — do not make configurable
     MONITOR_INTERVAL_SECONDS = 300  # 5 minutes
+    FIXED_STOP_LOSS_PCT = 0.5
+    FIXED_TAKE_PROFIT_PCT = 1.0
     FIXED_MAX_HOLD_MINUTES = 20
 
     def __init__(

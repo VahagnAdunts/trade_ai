@@ -7,6 +7,6 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py --telegram-runner
-    # Set secrets in Render dashboard: STOCK_DATA_API_KEY, LLM keys, TELEGRAM_*, etc.
+    # Set secrets in Render dashboard: STOCK_DATA_API_KEY (+ optional SECONDARY/TERTIARY), LLM keys, TELEGRAM_*, etc.
     # Optional: attach a persistent disk and set ALPACA_PENDING_CLOSES_FILE to a path on it
     # so pending closes survive deploys (default cwd file is ephemeral on restarts).

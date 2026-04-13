@@ -212,10 +212,9 @@ async def run_analysis(
 ) -> Path:
     if config.alpaca_api_key_id and config.alpaca_api_secret_key:
         await reconcile_pending_closes_on_startup(config)
-    _td_keys = [config.stock_data_api_key]
-    if config.stock_data_api_key_secondary:
-        _td_keys.append(config.stock_data_api_key_secondary)
-    provider = TwelveDataMultiKeyClient(*_td_keys, log_label="[Engine]")
+    provider = TwelveDataMultiKeyClient(
+        *config.twelve_data_api_keys(), log_label="[Engine]"
+    )
     if out_dir == "outputs" and crypto:
         out_dir = "outputs_crypto"
     output_dir = Path(out_dir)

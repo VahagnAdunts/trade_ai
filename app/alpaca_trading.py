@@ -195,10 +195,7 @@ def _submit_market_order(
         }
 
     notional = notional_usd
-    _quote_keys = [config.stock_data_api_key]
-    if config.stock_data_api_key_secondary:
-        _quote_keys.append(config.stock_data_api_key_secondary)
-    price = fetch_quote_close_sync_try_keys(symbol, *_quote_keys)
+    price = fetch_quote_close_sync_try_keys(symbol, *config.twelve_data_api_keys())
     if price <= 0:
         raise ValueError(f"Invalid quote price for {symbol}: {price}")
     shares = int(notional // price)

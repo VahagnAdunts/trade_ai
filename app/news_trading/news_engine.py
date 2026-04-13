@@ -468,10 +468,9 @@ class NewsTradeEngine:
                 raise ValueError(
                     f"Alpaca fetch failed for {symbol} and TwelveData key is missing"
                 ) from alpaca_exc
-            td_keys: List[str] = [self.config.stock_data_api_key]
-            if self.config.stock_data_api_key_secondary:
-                td_keys.append(self.config.stock_data_api_key_secondary)
-            provider = TwelveDataMultiKeyClient(*td_keys, log_label="[News]")
+            provider = TwelveDataMultiKeyClient(
+                *self.config.twelve_data_api_keys(), log_label="[News]"
+            )
             points = await provider.fetch_hourly_30d(symbol)
             print(
                 f"[News] Historical source for {symbol}: TwelveData "

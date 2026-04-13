@@ -11,6 +11,8 @@ from app.models import OHLCVPoint
 TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
 TWELVE_DATA_QUOTE_URL = "https://api.twelvedata.com/quote"
 
+_TWELVE_KEY_SLOT_NAMES = ("primary", "secondary", "tertiary")
+
 
 def _dedupe_keys(keys: Sequence[str]) -> List[str]:
     out: List[str] = []
@@ -138,7 +140,11 @@ class TwelveDataMultiKeyClient:
             except Exception as exc:
                 last_exc = exc
                 if i + 1 < len(self._keys):
-                    label = "primary" if i == 0 else "secondary"
+                    label = (
+                        _TWELVE_KEY_SLOT_NAMES[i]
+                        if i < len(_TWELVE_KEY_SLOT_NAMES)
+                        else f"key_{i + 1}"
+                    )
                     print(
                         f"{self.log_label} {label} key failed for {symbol}: {exc} "
                         f"— trying next key",

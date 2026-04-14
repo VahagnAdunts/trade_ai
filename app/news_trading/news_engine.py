@@ -135,7 +135,13 @@ class NewsTradeEngine:
         print("[News] Waiting for events...", flush=True)
 
         if sources:
-            await asyncio.gather(*sources, return_exceptions=True)
+            results = await asyncio.gather(*sources, return_exceptions=True)
+            for res in results:
+                if isinstance(res, BaseException):
+                    print(
+                        f"[News] FATAL: a news source task exited: {res!r}",
+                        flush=True,
+                    )
         else:
             while self._running:
                 await asyncio.sleep(60)

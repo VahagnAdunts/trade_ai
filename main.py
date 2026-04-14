@@ -150,17 +150,26 @@ async def _run_both() -> None:
     """Run Telegram runner + news trading engine simultaneously."""
     from app.news_trading.news_engine import NewsTradeEngine
     config = AppConfig.from_env()
+    print(
+        "[main] /run and /run_crypto only start the multi-LLM equity/crypto analysis job; "
+        "the news engine (if enabled) polls X/RSS/etc. on its own — no /run needed for news alerts.",
+        flush=True,
+    )
     tg = TelegramConfig(
         enabled=config.telegram_enabled,
         bot_token=config.telegram_bot_token,
         chat_id=config.telegram_chat_id,
     )
     engine = NewsTradeEngine(config)
-    await asyncio.gather(
+    results = await asyncio.gather(
         _run_from_telegram(config, tg),
         engine.start(),
         return_exceptions=True,
     )
+    labels = ("telegram_runner", "news_engine")
+    for label, res in zip(labels, results):
+        if isinstance(res, BaseException):
+            print(f"[main] Task {label} ended with error: {res!r}", flush=True)
 
 
 def _run_serve(host: str, port: int) -> None:

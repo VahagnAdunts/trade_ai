@@ -12,11 +12,20 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Awaitable, Callable, List, Optional, Set
+from typing import Awaitable, Callable, List, Optional, Set, Tuple
 
 import httpx
 
 _POLL_INTERVAL = 20.0
+
+# Some Nitter hosts reject default httpx / datacenter-looking clients without a UA.
+_RSS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; TredAiNewsBot/1.0; +https://github.com/VahagnAdunts/trade_ai) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+}
 
 NITTER_INSTANCES: List[str] = [
     "https://nitter.privacydev.net",
@@ -144,6 +153,7 @@ class XNitterMonitor:
         self._on_news = on_news
         self._running = False
         self._seen_guids: Set[str] = set()
+        self._bootstrapped_handles: Set[str] = set()
         self._batches = _build_batches(MONITORED_ACCOUNTS)
         self._instance_idx = 0
 
@@ -157,16 +167,49 @@ class XNitterMonitor:
         )
         batch_idx = 0
         while self._running:
-            batch = self._batches[batch_idx]
-            tasks = [self._poll_account(handle) for handle in batch]
-            await asyncio.gather(*tasks, return_exceptions=True)
-            batch_idx = (batch_idx + 1) % n_batches
-            await asyncio.sleep(_POLL_INTERVAL)
+            try:
+                batch = self._batches[batch_idx]
+                tasks = [self._poll_account(handle) for handle in batch]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                issues: List[str] = []
+                for h, res in zip(batch, results):
+                    if isinstance(res, BaseException):
+                        issues.append(f"{h}:exc:{type(res).__name__}")
+                    else:
+                        ok, msg = res
+                        if not ok and msg:
+                            issues.append(f"{h}:{msg}")
+                if issues:
+                    preview = ", ".join(issues[:6])
+                    more = f" …+{len(issues) - 6}" if len(issues) > 6 else ""
+                    print(
+                        f"[News] X/Nitter batch {batch_idx}: RSS issues {len(issues)}/{len(batch)} "
+                        f"— {preview}{more}",
+                        flush=True,
+                    )
+                if batch_idx == n_batches - 1:
+                    primed = len(self._bootstrapped_handles)
+                    print(
+                        f"[News] X/Nitter heartbeat: finished account rotation "
+                        f"({primed}/{len(MONITORED_ACCOUNTS)} handles primed from RSS)",
+                        flush=True,
+                    )
+                batch_idx = (batch_idx + 1) % n_batches
+                await asyncio.sleep(_POLL_INTERVAL)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"[News] X/Nitter monitor loop error (will retry in 30s): {exc}", flush=True)
+                await asyncio.sleep(30.0)
 
     async def stop(self) -> None:
         self._running = False
 
-    async def _poll_account(self, handle: str) -> None:
+    async def _poll_account(self, handle: str) -> Tuple[bool, str]:
+        """
+        Fetch RSS for one handle. Returns (ok, detail).
+        detail is empty on success; on failure a short reason (HTTP code, parse error, etc.).
+        """
         try:
             import feedparser
         except ImportError:
@@ -175,19 +218,36 @@ class XNitterMonitor:
                 "Run: pip install feedparser>=6.0.10",
                 flush=True,
             )
-            return
+            return False, "feedparser_missing"
 
+        last_detail = "all_instances_failed"
         for attempt in range(len(NITTER_INSTANCES)):
             idx = (self._instance_idx + attempt) % len(NITTER_INSTANCES)
-            base = NITTER_INSTANCES[idx]
+            base = NITTER_INSTANCES[idx].rstrip("/")
             url = f"{base}/{handle}/rss"
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.get(url)
+                    resp = await client.get(url, headers=_RSS_HEADERS)
                 if resp.status_code >= 400:
+                    last_detail = f"HTTP{resp.status_code}"
                     continue
                 feed = await asyncio.to_thread(feedparser.parse, resp.text)
                 entries = feed.get("entries") or []
+                if feed.get("bozo") and not entries:
+                    bexc = feed.get("bozo_exception")
+                    last_detail = f"parse:{type(bexc).__name__}" if bexc else "parse:bozo"
+                    continue
+
+                # First successful fetch: remember existing items so we only alert on *new* posts.
+                if handle not in self._bootstrapped_handles:
+                    for entry in entries:
+                        guid = str(entry.get("id") or entry.get("link") or "")
+                        if guid:
+                            self._seen_guids.add(guid)
+                    self._bootstrapped_handles.add(handle)
+                    self._instance_idx = idx
+                    return True, ""
+
                 for entry in reversed(entries):
                     guid = str(entry.get("id") or entry.get("link") or "")
                     if not guid or guid in self._seen_guids:
@@ -197,12 +257,18 @@ class XNitterMonitor:
                     if item:
                         await self._on_news(item)
                 self._instance_idx = idx
-                return
-            except Exception:
+                return True, ""
+            except httpx.HTTPError as exc:
+                last_detail = f"httpx:{type(exc).__name__}"
+                continue
+            except Exception as exc:
+                last_detail = f"exc:{type(exc).__name__}"
                 continue
 
         if len(self._seen_guids) > 10000:
             self._seen_guids = set(list(self._seen_guids)[-5000:])
+
+        return False, last_detail
 
     @staticmethod
     def _normalize(entry: dict, handle: str) -> Optional[dict]:

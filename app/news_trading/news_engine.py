@@ -88,6 +88,13 @@ class NewsTradeEngine:
         use_alpaca = mode in ("alpaca", "both")
         use_x = mode in ("x_stream", "both")
 
+        if mode == "both":
+            print(
+                "[News] NEWS_SOURCE_MODE=both: classical feeds (RSS + optional Alpaca WS / Polygon / "
+                "CryptoPanic) and social feeds (X via Nitter, optional Truth Social) run in parallel.",
+                flush=True,
+            )
+
         # ── Traditional news sources (mode=alpaca or both) ──
         if use_alpaca:
             if self.config.news_alpaca_news_enabled and self.config.alpaca_api_key_id:

@@ -30,13 +30,12 @@ _RSS_HEADERS = {
     "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
 }
 
-# Nitter-style RSS at ``{base}/{username}/rss``. Order matters: try healthiest first.
-# privacydev.net has been seen to resolve to 0.0.0.0; 1d4.us is often NXDOMAIN — avoid as defaults.
+# Nitter-style RSS at ``{base}/{username}/rss``. Order matters.
+# rss.xcancel.com rejects normal browser UAs (400) or serves a non-feed "whitelist" stub (200).
+# Several public Nitter hosts return 403 anti-bot HTML or 404; nitter.net currently serves real RSS.
 DEFAULT_NITTER_INSTANCES: List[str] = [
-    "https://rss.xcancel.com",
+    "https://nitter.net",
     "https://nitter.poast.org",
-    "https://nitter.woodland.cafe",
-    "https://nitter.pek.li",
 ]
 
 
@@ -47,6 +46,26 @@ def _resolve_nitter_bases() -> List[str]:
         return list(DEFAULT_NITTER_INSTANCES)
     bases = [b.strip().rstrip("/") for b in raw.split(",") if b.strip()]
     return bases if bases else list(DEFAULT_NITTER_INSTANCES)
+
+
+def _rss_response_rejected(status_code: int, text: str, content_type: str) -> Optional[str]:
+    """
+    Some hosts return 200 HTML/placeholder instead of RSS. Return a short reason to try the next host.
+    """
+    if status_code != 200:
+        return None
+    sample = (text or "")[:3000].lower()
+    ct = (content_type or "").lower()
+    if "only works inside an rss client" in sample:
+        return "rss_placeholder_400_style"
+    if "not yet whitelisted" in sample:
+        return "rss_whitelist_stub"
+    if "verifying your browser" in sample:
+        return "browser_challenge_html"
+    if "<rss" not in sample and "application/rss" not in ct and "application/xml" not in ct:
+        if "<html" in sample[:800]:
+            return "HTML_not_rss"
+    return None
 
 
 def _short_err(exc: Exception, limit: int = 72) -> str:
@@ -296,6 +315,11 @@ class XNitterMonitor:
                     resp = await client.get(url, headers=_RSS_HEADERS)
                 if resp.status_code >= 400:
                     last_detail = f"HTTP{resp.status_code}"
+                    continue
+                ctype = resp.headers.get("content-type") or ""
+                reject = _rss_response_rejected(resp.status_code, resp.text, ctype)
+                if reject:
+                    last_detail = reject
                     continue
                 feed = await asyncio.to_thread(feedparser.parse, resp.text)
                 entries = feed.get("entries") or []

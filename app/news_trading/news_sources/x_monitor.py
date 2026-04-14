@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Awaitable, Callable, List, Optional, Set, Tuple
+from urllib.parse import urlparse
 
 import httpx
 
@@ -50,6 +52,39 @@ def _short_err(exc: Exception, limit: int = 72) -> str:
     if not s:
         return ""
     return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _proxy_env_active() -> bool:
+    return any((os.getenv(k) or "").strip() for k in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"))
+
+
+def _log_startup_network_hints(nitter_bases: List[str]) -> None:
+    """One-time DNS check + proxy hint (errno -5 / 'No address' = DNS failure)."""
+    if _proxy_env_active():
+        print(
+            "[News] X/Nitter: HTTPS_PROXY / HTTP_PROXY / ALL_PROXY is set. "
+            "If you see 'No address associated with hostname', that name may be the "
+            "**proxy** host (mis-typed or dead) — unset these vars when not using a proxy.",
+            flush=True,
+        )
+    for base in nitter_bases:
+        raw = base if "://" in base else f"https://{base}"
+        host = urlparse(raw).hostname
+        if not host:
+            print(f"[News] X/Nitter DNS: invalid base URL {base!r}", flush=True)
+            continue
+        try:
+            infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            uniq = sorted({x[4][0] for x in infos})
+            prev = ", ".join(uniq[:4])
+            extra = f" (+{len(uniq) - 4} more)" if len(uniq) > 4 else ""
+            print(f"[News] X/Nitter DNS OK: {host} -> {prev}{extra}", flush=True)
+        except OSError as exc:
+            print(
+                f"[News] X/Nitter DNS FAILED for {host}: {exc}. "
+                f"Replace or extend NITTER_INSTANCES with hosts that resolve from this network.",
+                flush=True,
+            )
 
 MONITORED_ACCOUNTS: List[str] = [
     # ── Breaking news aggregators (fastest for market-moving headlines) ──
@@ -180,12 +215,14 @@ class XNitterMonitor:
         n_batches = len(self._batches)
         custom = bool((os.getenv("NITTER_INSTANCES") or "").strip())
         src = "NITTER_INSTANCES env" if custom else "default host list"
+        proxy_note = "proxy env active (trust_env)" if _proxy_env_active() else "no proxy env"
         print(
             f"[News] X/Nitter monitor started — {len(MONITORED_ACCOUNTS)} accounts "
             f"in {n_batches} batches, polling every {_POLL_INTERVAL}s "
-            f"({len(self._nitter_bases)} base URL(s) from {src}; HTTPS_PROXY respected)",
+            f"({len(self._nitter_bases)} base URL(s) from {src}; {proxy_note})",
             flush=True,
         )
+        _log_startup_network_hints(self._nitter_bases)
         batch_idx = 0
         while self._running:
             try:

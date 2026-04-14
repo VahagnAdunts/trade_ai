@@ -64,7 +64,7 @@ class TruthSocialMonitor:
         url = f"{_BASE_URL}/accounts/{account_id}/statuses"
         params = {"limit": "5", "exclude_replies": "true", "exclude_reblogs": "true"}
 
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        async with httpx.AsyncClient(timeout=12.0, trust_env=True) as client:
             resp = await client.get(url, params=params)
             if resp.status_code >= 400:
                 body = (resp.text or "").strip()[:200]

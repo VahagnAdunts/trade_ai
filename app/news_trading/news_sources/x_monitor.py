@@ -10,6 +10,7 @@ instances are tried on failure for resilience.
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Awaitable, Callable, List, Optional, Set, Tuple
@@ -27,12 +28,28 @@ _RSS_HEADERS = {
     "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
 }
 
-NITTER_INSTANCES: List[str] = [
+DEFAULT_NITTER_INSTANCES: List[str] = [
     "https://nitter.privacydev.net",
     "https://nitter.poast.org",
     "https://nitter.woodland.cafe",
     "https://nitter.1d4.us",
 ]
+
+
+def _resolve_nitter_bases() -> List[str]:
+    """Comma-separated https origins in NITTER_INSTANCES, else built-in defaults."""
+    raw = (os.getenv("NITTER_INSTANCES") or "").strip()
+    if not raw:
+        return list(DEFAULT_NITTER_INSTANCES)
+    bases = [b.strip().rstrip("/") for b in raw.split(",") if b.strip()]
+    return bases if bases else list(DEFAULT_NITTER_INSTANCES)
+
+
+def _short_err(exc: Exception, limit: int = 72) -> str:
+    s = str(exc).strip().replace("\n", " ")
+    if not s:
+        return ""
+    return s if len(s) <= limit else s[: limit - 1] + "…"
 
 MONITORED_ACCOUNTS: List[str] = [
     # ── Breaking news aggregators (fastest for market-moving headlines) ──
@@ -155,14 +172,18 @@ class XNitterMonitor:
         self._seen_guids: Set[str] = set()
         self._bootstrapped_handles: Set[str] = set()
         self._batches = _build_batches(MONITORED_ACCOUNTS)
+        self._nitter_bases = _resolve_nitter_bases()
         self._instance_idx = 0
 
     async def start(self) -> None:
         self._running = True
         n_batches = len(self._batches)
+        custom = bool((os.getenv("NITTER_INSTANCES") or "").strip())
+        src = "NITTER_INSTANCES env" if custom else "default host list"
         print(
             f"[News] X/Nitter monitor started — {len(MONITORED_ACCOUNTS)} accounts "
-            f"in {n_batches} batches, polling every {_POLL_INTERVAL}s",
+            f"in {n_batches} batches, polling every {_POLL_INTERVAL}s "
+            f"({len(self._nitter_bases)} base URL(s) from {src}; HTTPS_PROXY respected)",
             flush=True,
         )
         batch_idx = 0
@@ -221,12 +242,18 @@ class XNitterMonitor:
             return False, "feedparser_missing"
 
         last_detail = "all_instances_failed"
-        for attempt in range(len(NITTER_INSTANCES)):
-            idx = (self._instance_idx + attempt) % len(NITTER_INSTANCES)
-            base = NITTER_INSTANCES[idx].rstrip("/")
+        bases = self._nitter_bases
+        for attempt in range(len(bases)):
+            idx = (self._instance_idx + attempt) % len(bases)
+            base = bases[idx].rstrip("/")
             url = f"{base}/{handle}/rss"
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                timeout = httpx.Timeout(25.0, connect=20.0)
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    trust_env=True,
+                    follow_redirects=True,
+                ) as client:
                     resp = await client.get(url, headers=_RSS_HEADERS)
                 if resp.status_code >= 400:
                     last_detail = f"HTTP{resp.status_code}"
@@ -259,10 +286,14 @@ class XNitterMonitor:
                 self._instance_idx = idx
                 return True, ""
             except httpx.HTTPError as exc:
-                last_detail = f"httpx:{type(exc).__name__}"
+                tail = _short_err(exc)
+                last_detail = (
+                    f"httpx:{type(exc).__name__}:{tail}" if tail else f"httpx:{type(exc).__name__}"
+                )
                 continue
             except Exception as exc:
-                last_detail = f"exc:{type(exc).__name__}"
+                tail = _short_err(exc)
+                last_detail = f"exc:{type(exc).__name__}:{tail}" if tail else f"exc:{type(exc).__name__}"
                 continue
 
         if len(self._seen_guids) > 10000:

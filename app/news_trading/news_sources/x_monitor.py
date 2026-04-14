@@ -30,11 +30,13 @@ _RSS_HEADERS = {
     "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
 }
 
+# Nitter-style RSS at ``{base}/{username}/rss``. Order matters: try healthiest first.
+# privacydev.net has been seen to resolve to 0.0.0.0; 1d4.us is often NXDOMAIN — avoid as defaults.
 DEFAULT_NITTER_INSTANCES: List[str] = [
-    "https://nitter.privacydev.net",
+    "https://rss.xcancel.com",
     "https://nitter.poast.org",
     "https://nitter.woodland.cafe",
-    "https://nitter.1d4.us",
+    "https://nitter.pek.li",
 ]
 
 

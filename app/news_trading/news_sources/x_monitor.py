@@ -30,13 +30,12 @@ _RSS_HEADERS = {
     "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
 }
 
-# Nitter-style RSS at ``{base}/{username}/rss``. Order matters: try healthiest first.
-# privacydev.net has been seen to resolve to 0.0.0.0; 1d4.us is often NXDOMAIN — avoid as defaults.
+# Nitter-style RSS at ``{base}/{username}/rss``. Order matters.
+# rss.xcancel.com rejects normal browser UAs (400) or serves a non-feed "whitelist" stub (200).
+# Several public Nitter hosts return 403 anti-bot HTML or 404; nitter.net currently serves real RSS.
 DEFAULT_NITTER_INSTANCES: List[str] = [
-    "https://rss.xcancel.com",
+    "https://nitter.net",
     "https://nitter.poast.org",
-    "https://nitter.woodland.cafe",
-    "https://nitter.pek.li",
 ]
 
 
@@ -47,6 +46,26 @@ def _resolve_nitter_bases() -> List[str]:
         return list(DEFAULT_NITTER_INSTANCES)
     bases = [b.strip().rstrip("/") for b in raw.split(",") if b.strip()]
     return bases if bases else list(DEFAULT_NITTER_INSTANCES)
+
+
+def _rss_response_rejected(status_code: int, text: str, content_type: str) -> Optional[str]:
+    """
+    Some hosts return 200 HTML/placeholder instead of RSS. Return a short reason to try the next host.
+    """
+    if status_code != 200:
+        return None
+    sample = (text or "")[:3000].lower()
+    ct = (content_type or "").lower()
+    if "only works inside an rss client" in sample:
+        return "rss_placeholder_400_style"
+    if "not yet whitelisted" in sample:
+        return "rss_whitelist_stub"
+    if "verifying your browser" in sample:
+        return "browser_challenge_html"
+    if "<rss" not in sample and "application/rss" not in ct and "application/xml" not in ct:
+        if "<html" in sample[:800]:
+            return "HTML_not_rss"
+    return None
 
 
 def _short_err(exc: Exception, limit: int = 72) -> str:
@@ -87,6 +106,27 @@ def _log_startup_network_hints(nitter_bases: List[str]) -> None:
                 f"Replace or extend NITTER_INSTANCES with hosts that resolve from this network.",
                 flush=True,
             )
+
+
+def print_monitored_x_account_catalog(primary_nitter_base: str) -> None:
+    """Print every monitored X handle and the RSS URL shape (stdout / host logs)."""
+    base = primary_nitter_base.rstrip("/")
+    handles = MONITORED_ACCOUNTS
+    n = len(handles)
+    if n == 0:
+        return
+    ex = handles[0]
+    print(
+        f"[News] X/Nitter catalog: {n} X accounts. "
+        f"RSS: {base}/<handle>/rss   Web: https://x.com/<handle>",
+        flush=True,
+    )
+    print(f"[News] X/Nitter example: {base}/{ex}/rss", flush=True)
+    per_line = 8
+    for i in range(0, n, per_line):
+        row = handles[i : i + per_line]
+        print("[News] X/Nitter   " + "  ".join(row), flush=True)
+
 
 MONITORED_ACCOUNTS: List[str] = [
     # ── Breaking news aggregators (fastest for market-moving headlines) ──
@@ -232,6 +272,8 @@ class XNitterMonitor:
             flush=True,
         )
         _log_startup_network_hints(self._nitter_bases)
+        if self._nitter_bases:
+            print_monitored_x_account_catalog(self._nitter_bases[0])
         batch_idx = 0
         while self._running:
             try:
@@ -303,6 +345,11 @@ class XNitterMonitor:
                     resp = await client.get(url, headers=_RSS_HEADERS)
                 if resp.status_code >= 400:
                     last_detail = f"HTTP{resp.status_code}"
+                    continue
+                ctype = resp.headers.get("content-type") or ""
+                reject = _rss_response_rejected(resp.status_code, resp.text, ctype)
+                if reject:
+                    last_detail = reject
                     continue
                 feed = await asyncio.to_thread(feedparser.parse, resp.text)
                 entries = feed.get("entries") or []

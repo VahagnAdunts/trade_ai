@@ -214,6 +214,13 @@ class XNitterMonitor:
 
     async def start(self) -> None:
         self._running = True
+        print(
+            "[News] WARNING: Nitter/X scraping is DEPRECATED — most public Nitter "
+            "instances are blocked by X (HTTP 403/404). The Bluesky monitor is the "
+            "recommended replacement.  Set NEWS_BLUESKY_ENABLED=true in your .env. "
+            "This Nitter monitor will still attempt to poll but expect high failure rates.",
+            flush=True,
+        )
         n_batches = len(self._batches)
         custom = bool((os.getenv("NITTER_INSTANCES") or "").strip())
         src = "NITTER_INSTANCES env" if custom else "default host list"

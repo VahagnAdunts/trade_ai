@@ -60,6 +60,8 @@ class AppConfig:
     news_source_mode: str
     x_bearer_token: Optional[str]
     news_truth_social_enabled: bool
+    news_bluesky_enabled: bool
+    news_x_syndication_enabled: bool
 
     @staticmethod
     def from_env() -> "AppConfig":
@@ -145,6 +147,12 @@ class AppConfig:
         news_truth_social_enabled = _parse_bool_default(
             os.getenv("NEWS_TRUTH_SOCIAL_ENABLED"), False
         )
+        news_bluesky_enabled = _parse_bool_default(
+            os.getenv("NEWS_BLUESKY_ENABLED"), True
+        )
+        news_x_syndication_enabled = _parse_bool_default(
+            os.getenv("NEWS_X_SYNDICATION_ENABLED"), True
+        )
 
         return AppConfig(
             stock_data_api_key=_required("STOCK_DATA_API_KEY"),
@@ -192,6 +200,8 @@ class AppConfig:
             news_source_mode=news_source_mode_raw,
             x_bearer_token=x_bearer_token,
             news_truth_social_enabled=news_truth_social_enabled,
+            news_bluesky_enabled=news_bluesky_enabled,
+            news_x_syndication_enabled=news_x_syndication_enabled,
         )
 
     def twelve_data_api_keys(self) -> List[str]:

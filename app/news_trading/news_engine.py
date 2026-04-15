@@ -53,7 +53,31 @@ _COOLDOWN_MINUTES = 30
 _MAX_SYMBOLS_PER_EVENT = 3
 _SEMAPHORE_LIMIT = 5
 _HISTORICAL_LOOKBACK_DAYS = 30
-_MAX_NEWS_AGE_MINUTES = 15
+# Source-aware staleness thresholds (in minutes).
+# Social/squawk: market prices in within 30-90 seconds → 2 min max.
+# Press wires / SEC filings: less efficient, reaction takes longer → 5 min max.
+# Default for unknown sources: 2 min.
+_MAX_NEWS_AGE_MINUTES = 2  # fallback
+_SOURCE_MAX_AGE: dict = {
+    # Social / real-time alert services — fastest reaction
+    "bluesky":        2,
+    "x_syndication":  2,
+    "truth_social":   2,
+    # Government / regulatory — slower market reaction, still worth trading
+    "Federal Reserve": 5,
+    "White House":     5,
+    "US Treasury":     5,
+    "SEC Press Releases": 5,
+    "SEC EDGAR 8-K":   5,
+    "FDA":             5,
+    # Press wires — companies announce here first, reaction < 3 min
+    "PRNewswire":      3,
+    "BusinessWire":    3,
+    "GlobeNewswire":   3,
+    # Legacy / aggregated — keep tight
+    "alpaca":          2,
+    "polygon":         2,
+}
 
 
 class NewsTradeEngine:
@@ -1080,6 +1104,9 @@ def _is_news_stale(news_item: dict) -> tuple[bool, float]:
     """
     Returns (is_stale, age_minutes) using published_at from the payload.
     If missing/unparseable, treat as stale.
+
+    Max age is source-aware: social media = 2 min, press wires = 3 min,
+    government/regulatory = 5 min.  Unknown sources default to 2 min.
     """
     raw = news_item.get("published_at") or news_item.get("created_at") or ""
     if not raw:
@@ -1108,4 +1135,13 @@ def _is_news_stale(news_item: dict) -> tuple[bool, float]:
     published = published.astimezone(UTC)
     now = datetime.now(UTC)
     age_minutes = (now - published).total_seconds() / 60.0
-    return age_minutes > _MAX_NEWS_AGE_MINUTES, age_minutes
+
+    # Pick the right max-age based on the source prefix
+    source = str(news_item.get("source") or "").lower()
+    max_age = _MAX_NEWS_AGE_MINUTES  # default 2 min
+    for src_key, limit in _SOURCE_MAX_AGE.items():
+        if source.startswith(src_key.lower()):
+            max_age = limit
+            break
+
+    return age_minutes > max_age, age_minutes

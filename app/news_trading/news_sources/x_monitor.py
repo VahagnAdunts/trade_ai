@@ -107,6 +107,27 @@ def _log_startup_network_hints(nitter_bases: List[str]) -> None:
                 flush=True,
             )
 
+
+def print_monitored_x_account_catalog(primary_nitter_base: str) -> None:
+    """Print every monitored X handle and the RSS URL shape (stdout / host logs)."""
+    base = primary_nitter_base.rstrip("/")
+    handles = MONITORED_ACCOUNTS
+    n = len(handles)
+    if n == 0:
+        return
+    ex = handles[0]
+    print(
+        f"[News] X/Nitter catalog: {n} X accounts. "
+        f"RSS: {base}/<handle>/rss   Web: https://x.com/<handle>",
+        flush=True,
+    )
+    print(f"[News] X/Nitter example: {base}/{ex}/rss", flush=True)
+    per_line = 8
+    for i in range(0, n, per_line):
+        row = handles[i : i + per_line]
+        print("[News] X/Nitter   " + "  ".join(row), flush=True)
+
+
 MONITORED_ACCOUNTS: List[str] = [
     # ── Breaking news aggregators (fastest for market-moving headlines) ──
     "DeItaone",
@@ -244,6 +265,8 @@ class XNitterMonitor:
             flush=True,
         )
         _log_startup_network_hints(self._nitter_bases)
+        if self._nitter_bases:
+            print_monitored_x_account_catalog(self._nitter_bases[0])
         batch_idx = 0
         while self._running:
             try:

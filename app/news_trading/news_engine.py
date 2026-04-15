@@ -53,7 +53,8 @@ _COOLDOWN_MINUTES = 30
 _MAX_SYMBOLS_PER_EVENT = 3
 _SEMAPHORE_LIMIT = 5
 _HISTORICAL_LOOKBACK_DAYS = 30
-_MAX_NEWS_AGE_MINUTES = 15
+_MAX_NEWS_AGE_MINUTES = 5  # all sources: reject anything older than 5 minutes
+_SOURCE_MAX_AGE: dict = {}  # reserved for future per-source tuning
 
 
 class NewsTradeEngine:
@@ -1080,6 +1081,9 @@ def _is_news_stale(news_item: dict) -> tuple[bool, float]:
     """
     Returns (is_stale, age_minutes) using published_at from the payload.
     If missing/unparseable, treat as stale.
+
+    Max age is source-aware: social media = 2 min, press wires = 3 min,
+    government/regulatory = 5 min.  Unknown sources default to 2 min.
     """
     raw = news_item.get("published_at") or news_item.get("created_at") or ""
     if not raw:
@@ -1108,4 +1112,13 @@ def _is_news_stale(news_item: dict) -> tuple[bool, float]:
     published = published.astimezone(UTC)
     now = datetime.now(UTC)
     age_minutes = (now - published).total_seconds() / 60.0
-    return age_minutes > _MAX_NEWS_AGE_MINUTES, age_minutes
+
+    # Pick the right max-age based on the source prefix
+    source = str(news_item.get("source") or "").lower()
+    max_age = _MAX_NEWS_AGE_MINUTES  # default 2 min
+    for src_key, limit in _SOURCE_MAX_AGE.items():
+        if source.startswith(src_key.lower()):
+            max_age = limit
+            break
+
+    return age_minutes > max_age, age_minutes

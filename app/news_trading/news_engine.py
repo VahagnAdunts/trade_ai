@@ -53,31 +53,8 @@ _COOLDOWN_MINUTES = 30
 _MAX_SYMBOLS_PER_EVENT = 3
 _SEMAPHORE_LIMIT = 5
 _HISTORICAL_LOOKBACK_DAYS = 30
-# Source-aware staleness thresholds (in minutes).
-# Social/squawk: market prices in within 30-90 seconds → 2 min max.
-# Press wires / SEC filings: less efficient, reaction takes longer → 5 min max.
-# Default for unknown sources: 2 min.
-_MAX_NEWS_AGE_MINUTES = 2  # fallback
-_SOURCE_MAX_AGE: dict = {
-    # Social / real-time alert services — fastest reaction
-    "bluesky":        2,
-    "x_syndication":  2,
-    "truth_social":   2,
-    # Government / regulatory — slower market reaction, still worth trading
-    "Federal Reserve": 5,
-    "White House":     5,
-    "US Treasury":     5,
-    "SEC Press Releases": 5,
-    "SEC EDGAR 8-K":   5,
-    "FDA":             5,
-    # Press wires — companies announce here first, reaction < 3 min
-    "PRNewswire":      3,
-    "BusinessWire":    3,
-    "GlobeNewswire":   3,
-    # Legacy / aggregated — keep tight
-    "alpaca":          2,
-    "polygon":         2,
-}
+_MAX_NEWS_AGE_MINUTES = 5  # all sources: reject anything older than 5 minutes
+_SOURCE_MAX_AGE: dict = {}  # reserved for future per-source tuning
 
 
 class NewsTradeEngine:

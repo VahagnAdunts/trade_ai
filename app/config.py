@@ -62,6 +62,7 @@ class AppConfig:
     news_truth_social_enabled: bool
     news_bluesky_enabled: bool
     news_x_syndication_enabled: bool
+    news_x_monitor_enabled: bool
 
     @staticmethod
     def from_env() -> "AppConfig":
@@ -153,6 +154,9 @@ class AppConfig:
         news_x_syndication_enabled = _parse_bool_default(
             os.getenv("NEWS_X_SYNDICATION_ENABLED"), True
         )
+        news_x_monitor_enabled = _parse_bool_default(
+            os.getenv("NEWS_X_MONITOR_ENABLED"), False  # Nitter is defunct; off by default
+        )
 
         return AppConfig(
             stock_data_api_key=_required("STOCK_DATA_API_KEY"),
@@ -202,6 +206,7 @@ class AppConfig:
             news_truth_social_enabled=news_truth_social_enabled,
             news_bluesky_enabled=news_bluesky_enabled,
             news_x_syndication_enabled=news_x_syndication_enabled,
+            news_x_monitor_enabled=news_x_monitor_enabled,
         )
 
     def twelve_data_api_keys(self) -> List[str]:

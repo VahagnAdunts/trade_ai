@@ -126,7 +126,7 @@ class NewsTradeEngine:
             sources.append(rss.start())
 
         # ── X / Twitter + Truth Social sources (mode=x_stream or both) ──
-        if use_x:
+        if use_x and self.config.news_x_monitor_enabled:
             from app.news_trading.news_sources.x_monitor import create_x_monitor
             x_mon = create_x_monitor(self._on_news_item)
             sources.append(x_mon.start())

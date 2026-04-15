@@ -59,12 +59,18 @@ class TruthSocialMonitor:
         self._on_news = on_news
         self._running = False
         self._seen_ids: Set[str] = set()
+        self._ip_blocked_until: float = 0.0  # monotonic; set when datacenter IP is blocked
 
     async def start(self) -> None:
+        import time
         self._running = True
         names = ", ".join(TRUTH_SOCIAL_ACCOUNTS.keys())
         print(f"[News] Truth Social monitor started — accounts: {names}", flush=True)
         while self._running:
+            # Skip entirely while IP-blocked (datacenter IP blocked by Cloudflare)
+            if time.monotonic() < self._ip_blocked_until:
+                await asyncio.sleep(_POLL_INTERVAL)
+                continue
             for username, account_id in TRUTH_SOCIAL_ACCOUNTS.items():
                 try:
                     await self._poll_account(username, account_id)
@@ -81,11 +87,28 @@ class TruthSocialMonitor:
         self._running = False
 
     async def _poll_account(self, username: str, account_id: str) -> None:
+        import time
         url = f"{_BASE_URL}/accounts/{account_id}/statuses"
         params = {"limit": "5", "exclude_replies": "true", "exclude_reblogs": "true"}
 
         async with httpx.AsyncClient(timeout=12.0, trust_env=True) as client:
             resp = await client.get(url, params=params, headers=_HEADERS)
+            if resp.status_code == 403:
+                body = (resp.text or "").strip()
+                if "<!DOCTYPE" in body or "<html" in body:
+                    # Cloudflare blocking datacenter IP — back off 10 min, log once
+                    self._ip_blocked_until = time.monotonic() + 600.0
+                    print(
+                        f"[News] Truth Social: datacenter IP blocked by Cloudflare "
+                        f"(@{username}) — pausing for 10 min",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[News] Truth Social API error 403 for @{username}: {body[:200]}",
+                        flush=True,
+                    )
+                return
             if resp.status_code >= 400:
                 body = (resp.text or "").strip()[:200]
                 print(

@@ -15,6 +15,17 @@ import httpx
 _BASE_URL = "https://truthsocial.com/api/v1"
 _POLL_INTERVAL = 30.0
 
+# Browser-like headers required — bare httpx UA gets HTTP 403.
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://truthsocial.com/",
+}
+
 TRUTH_SOCIAL_ACCOUNTS: Dict[str, str] = {
     "realDonaldTrump": "107780257626128497",
 }
@@ -65,7 +76,7 @@ class TruthSocialMonitor:
         params = {"limit": "5", "exclude_replies": "true", "exclude_reblogs": "true"}
 
         async with httpx.AsyncClient(timeout=12.0, trust_env=True) as client:
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params=params, headers=_HEADERS)
             if resp.status_code >= 400:
                 body = (resp.text or "").strip()[:200]
                 print(

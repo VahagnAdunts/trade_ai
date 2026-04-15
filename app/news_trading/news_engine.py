@@ -136,6 +136,24 @@ class NewsTradeEngine:
                 ts_mon = create_truth_social_monitor(self._on_news_item)
                 sources.append(ts_mon.start())
 
+        # ── Bluesky (free AT Protocol — works with any source mode) ──
+        if self.config.news_bluesky_enabled:
+            from app.news_trading.news_sources.bluesky_monitor import create_bluesky_monitor
+            bsky = create_bluesky_monitor(self._on_news_item)
+            sources.append(bsky.start())
+
+        # ── X/Twitter via free syndication API (no API key needed) ──
+        if self.config.news_x_syndication_enabled:
+            from app.news_trading.news_sources.x_syndication import create_x_syndication_monitor
+            xsyn = create_x_syndication_monitor(self._on_news_item)
+            sources.append(xsyn.start())
+
+        # ── Truth Social (independent of X mode — always run if enabled) ──
+        if self.config.news_truth_social_enabled and not use_x:
+            from app.news_trading.news_sources.truth_social import create_truth_social_monitor
+            ts_mon = create_truth_social_monitor(self._on_news_item)
+            sources.append(ts_mon.start())
+
         if not sources:
             print("[News] WARNING: No news sources configured. Check your .env.", flush=True)
 

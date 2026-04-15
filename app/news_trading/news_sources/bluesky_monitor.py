@@ -35,109 +35,72 @@ _RESOLVE_CONCURRENCY = 5       # parallel profile lookups at startup
 # ---------------------------------------------------------------------------
 BLUESKY_CANDIDATES: List[Tuple[str, str]] = [
     # =====================================================================
-    # VERIFIED accounts (tested against live API — April 2026).
-    # getProfile is called at startup: non-existent handles are skipped,
-    # so speculative entries cost nothing except a one-time 404.
+    # PRIMARY SOURCE accounts only — people/services that CREATE news,
+    # not journalists or media outlets that REPORT it.
+    #
+    # Media outlets (Reuters, Bloomberg, CNBC, WSJ etc.) post on Bluesky
+    # AFTER their articles are published — too late for trading.
     # =====================================================================
 
-    # ── Breaking news / financial aggregators ─────────────────────────────
-    ("Unusual Whales", "unusualwhales.bsky.social"),
-    ("FinancialJuice", "financialjuice.bsky.social"),
-    ("Newsquawk", "newsquawk.bsky.social"),
-    ("Tier10K", "tier10k.bsky.social"),
+    # ── Real-time market alert services (squawk — fastest on Bluesky) ────
+    # These post raw market-moving alerts, not articles.
+    ("Unusual Whales", "unusualwhales.bsky.social"),      # options flow + dark pool
+    ("FinancialJuice", "financialjuice.bsky.social"),     # fastest breaking alerts
+    ("Newsquawk", "newsquawk.bsky.social"),               # audio squawk service
+    ("Tier10K", "tier10k.bsky.social"),                   # real-time market data
 
-    # ── Major news outlets (domain-verified = highest trust) ──────────────
-    ("Reuters", "reuters.com"),
-    ("AP News", "apnews.com"),
-    ("New York Times", "nytimes.com"),
-    ("Washington Post", "washingtonpost.com"),
-    ("The Guardian", "theguardian.com"),
-    ("Bloomberg", "bloomberg.com"),
-    ("CNBC", "cnbc.com"),
-    ("Wall Street Journal", "wsj.com"),
-    ("MarketWatch", "marketwatch.com"),
-    ("CNN", "cnn.com"),
-    ("NPR", "npr.org"),
-    ("NBC News", "nbcnews.com"),
-    ("CBS News", "cbsnews.com"),
-    ("Forbes", "forbes.com"),
-    ("The Economist", "economist.com"),
-    ("Axios", "axios.com"),
-    ("Politico", "politico.com"),
-    ("Barrons", "barrons.com"),
-
-    # ── Financial journalists (verified active) ──────────────────────────
-    ("Carl Quintanilla", "carlquintanilla.bsky.social"),
-    ("David Faber", "davidfaber.bsky.social"),
-    ("Becky Quick", "beckyquick.bsky.social"),
-    ("Kyla Scanlon", "kyla.bsky.social"),
-    ("Matt Levine", "mattlevine.bsky.social"),
-    ("Leslie Picker", "lesliepicker.bsky.social"),
-    ("Ed Ludlow", "edludlow.bsky.social"),
-    ("Sonali Basak", "sonalibasak.bsky.social"),
-    ("Jason Furman", "jasonfurman.bsky.social"),
-
-    # ── CEOs / Founders ───────────────────────────────────────────────────
+    # ── CEOs / Founders (their posts ARE the news) ────────────────────────
     ("Bill Gates", "billgates.bsky.social"),
-    ("Pat Gelsinger", "patgelsinger.bsky.social"),
+    ("Pat Gelsinger", "patgelsinger.bsky.social"),        # Intel CEO
+    ("Brian Armstrong", "brianarmstrong.bsky.social"),    # Coinbase CEO
 
-    # ── Investors / Fund Managers / Analysts ──────────────────────────────
+    # ── Investors / Fund Managers ────────────────────────────────────────
+    # These make direct market-moving statements, not just commentary.
     ("Mark Cuban", "mcuban.bsky.social"),
-    ("Mohamed El-Erian", "elerianm.bsky.social"),
-    ("Liz Ann Sonders", "lizannsonders.bsky.social"),
-    ("Aswath Damodaran", "aswathdamodaran.bsky.social"),
+    ("Mohamed El-Erian", "elerianm.bsky.social"),         # ex-PIMCO CEO, economist
+    ("Liz Ann Sonders", "lizannsonders.bsky.social"),     # Schwab Chief Investment Strategist
+    ("Aswath Damodaran", "aswathdamodaran.bsky.social"),  # NYU valuation expert
+    ("Jason Furman", "jasonfurman.bsky.social"),          # ex-Obama CEA Chair
 
-    # ── Crypto ────────────────────────────────────────────────────────────
-    ("Brian Armstrong", "brianarmstrong.bsky.social"),
-
-    # ── Political figures (policy moves markets) ──────────────────────────
+    # ── Political figures (policy = market-moving) ────────────────────────
     ("AOC", "aoc.bsky.social"),
 
-    # =====================================================================
-    # SPECULATIVE entries — handle exists but may be parody/inactive.
-    # Kept because getProfile will auto-skip if removed or suspended.
-    # =====================================================================
-    ("Reuters Business", "reutersbiz.bsky.social"),
-    ("WSJ Markets", "wsjmarkets.bsky.social"),
-    ("CNBC Now", "cnbcnow.bsky.social"),
-    ("Kate Rooney", "katerooney.bsky.social"),
+    # ── Squawk / alert services that may join Bluesky ─────────────────────
     ("Fxhedgers", "fxhedgers.bsky.social"),
-    ("MarketWatch", "marketwatch.bsky.social"),
-    ("BBC News", "bbcnews.bsky.social"),
-    ("BBC Breaking", "bbcbreaking.bsky.social"),
-
-    # ── Not yet on Bluesky but may join — zero cost to keep as candidates ─
     ("DeItaone", "deitaone.bsky.social"),
     ("FirstSquawk", "firstsquawk.bsky.social"),
     ("LiveSquawk", "livesquawk.bsky.social"),
-    ("zerohedge", "zerohedge.bsky.social"),
-    ("MarketCurrents", "marketcurrents.bsky.social"),
-    ("StockMKTNewz", "stockmktnewz.bsky.social"),
-    ("IGSquawk", "igsquawk.bsky.social"),
     ("Watcher Guru", "watcherguru.bsky.social"),
-    ("Jim Cramer", "jimcramer.bsky.social"),
-    ("Andrew Ross Sorkin", "andrewrosssorkin.bsky.social"),
-    ("Sara Eisen", "saraeisen.bsky.social"),
-    ("Kayla Tausche", "kaylatausche.bsky.social"),
+    ("IGSquawk", "igsquawk.bsky.social"),
+    ("StockMKTNewz", "stockmktnewz.bsky.social"),
+    ("MarketCurrents", "marketcurrents.bsky.social"),
+    ("zerohedge", "zerohedge.bsky.social"),
+
+    # ── Government / Regulatory officials ────────────────────────────────
     ("Federal Reserve", "federalreserve.bsky.social"),
     ("US Treasury", "ustreasury.bsky.social"),
     ("SEC", "secgov.bsky.social"),
     ("POTUS", "potus.bsky.social"),
+    ("Speaker Johnson", "speakerjohnson.bsky.social"),
+
+    # ── CEOs not yet confirmed on Bluesky ────────────────────────────────
     ("Tim Cook", "timcook.bsky.social"),
     ("Satya Nadella", "satyanadella.bsky.social"),
     ("Lisa Su", "lisasu.bsky.social"),
-    ("Jeff Bezos", "jeffbezos.bsky.social"),
-    ("Sundar Pichai", "sundarpichai.bsky.social"),
-    ("Elon Musk", "elonmusk.bsky.social"),
     ("Jensen Huang", "jensenhuang.bsky.social"),
+    ("Sundar Pichai", "sundarpichai.bsky.social"),
+    ("Jeff Bezos", "jeffbezos.bsky.social"),
+    ("Elon Musk", "elonmusk.bsky.social"),
+
+    # ── Investors / activists ─────────────────────────────────────────────
     ("Cathie Wood", "cathiewood.bsky.social"),
-    ("Ray Dalio", "raydalio.bsky.social"),
     ("Bill Ackman", "billackman.bsky.social"),
-    ("Paul Krugman", "paulkrugman.bsky.social"),
+    ("Ray Dalio", "raydalio.bsky.social"),
     ("Carl Icahn", "carlicahn.bsky.social"),
-    ("Speaker Johnson", "speakerjohnson.bsky.social"),
-    ("Yahoo Finance", "yahoofinance.bsky.social"),
-    ("Business Insider", "businessinsider.bsky.social"),
+    ("Paul Krugman", "paulkrugman.bsky.social"),
+    ("Chamath", "chamath.bsky.social"),
+
+    # ── Crypto founders (direct market impact) ────────────────────────────
     ("Vitalik Buterin", "vitalikbuterin.bsky.social"),
     ("CZ Binance", "czbinance.bsky.social"),
 ]

@@ -22,10 +22,11 @@ from typing import Awaitable, Callable, Dict, List, Optional, Set, Tuple
 import httpx
 
 _SYND_URL = "https://syndication.twitter.com/srv/timeline-profile/screen-name"
-_POLL_INTERVAL = 30.0          # seconds between batches
-_INTER_BATCH_DELAY = 5.0       # seconds between individual requests in a batch
-_ACCOUNTS_PER_BATCH = 5        # small batches to avoid 429
+_POLL_INTERVAL = 60.0          # seconds between batches
+_INTER_BATCH_DELAY = 8.0       # seconds between individual requests in a batch
+_ACCOUNTS_PER_BATCH = 3        # small batches to avoid 429
 _REQUEST_TIMEOUT = 15.0
+_ACCOUNT_BACKOFF = 300.0       # seconds to skip an account after 429 (per-account)
 
 _HEADERS = {
     "User-Agent": (
@@ -88,7 +89,7 @@ class XSyndicationMonitor:
         self._running = False
         self._seen_ids: Set[str] = set()
         self._bootstrapped: Set[str] = set()
-        self._rate_limited_until: float = 0.0  # monotonic time
+        self._account_backoff: Dict[str, float] = {}  # handle -> monotonic backoff time
 
     async def start(self) -> None:
         self._running = True
@@ -153,9 +154,9 @@ class XSyndicationMonitor:
         """Fetch timeline for one handle. Returns (ok, detail)."""
         import time
 
-        # Respect rate-limit backoff
+        # Respect per-account rate-limit backoff
         now_mono = time.monotonic()
-        if now_mono < self._rate_limited_until:
+        if now_mono < self._account_backoff.get(handle, 0.0):
             return False, "rate_backoff"
 
         try:
@@ -169,8 +170,8 @@ class XSyndicationMonitor:
                 )
 
                 if resp.status_code == 429:
-                    # Back off for 60 seconds
-                    self._rate_limited_until = time.monotonic() + 60.0
+                    # Back off this account for 5 minutes; others continue unaffected
+                    self._account_backoff[handle] = time.monotonic() + _ACCOUNT_BACKOFF
                     return False, "HTTP429"
 
                 if resp.status_code != 200:

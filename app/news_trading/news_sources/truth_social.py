@@ -15,15 +15,24 @@ import httpx
 _BASE_URL = "https://truthsocial.com/api/v1"
 _POLL_INTERVAL = 30.0
 
-# Browser-like headers required — bare httpx UA gets HTTP 403.
+# Full browser headers required — Cloudflare blocks requests missing Sec-* headers.
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json",
+    "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://truthsocial.com/",
+    "Origin": "https://truthsocial.com",
+    "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"macOS"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    "Connection": "keep-alive",
 }
 
 TRUTH_SOCIAL_ACCOUNTS: Dict[str, str] = {

@@ -197,18 +197,6 @@ class NewsTradeEngine:
 
         # Staleness protection based on actual publication timestamp.
         is_stale, age_minutes = _is_news_stale(news_item)
-        if age_minutes >= 0:
-            print(
-                f"[News][TimeDebug] published_at_raw='{raw_published_at}' "
-                f"age_min={age_minutes:.2f} stale={is_stale}",
-                flush=True,
-            )
-        else:
-            print(
-                f"[News][TimeDebug] published_at_raw='{raw_published_at}' "
-                f"age_min=parse_failed stale=True",
-                flush=True,
-            )
         if is_stale:
             if age_minutes >= 0:
                 print(
@@ -218,6 +206,16 @@ class NewsTradeEngine:
             else:
                 print(f"[News] NO TIMESTAMP — skipped: {headline[:80]}", flush=True)
             return
+
+        # Log every fresh item that passes staleness check
+        url = news_item.get("url") or ""
+        src = news_item.get("source") or "unknown"
+        age_str = f"{age_minutes:.1f}min" if age_minutes >= 0 else "no-ts"
+        print(
+            f"[News] FRESH [{src}] ({age_str}) {headline[:120]}"
+            + (f" — {url}" if url else ""),
+            flush=True,
+        )
 
         # Keyword classify for direction hint; no longer used as a gate
         classification = classify_event(headline, symbols, asset_class)

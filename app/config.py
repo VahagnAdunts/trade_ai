@@ -152,7 +152,7 @@ class AppConfig:
             os.getenv("NEWS_BLUESKY_ENABLED"), True
         )
         news_x_syndication_enabled = _parse_bool_default(
-            os.getenv("NEWS_X_SYNDICATION_ENABLED"), True
+            os.getenv("NEWS_X_SYNDICATION_ENABLED"), False  # blocked on cloud/datacenter IPs
         )
         news_x_monitor_enabled = _parse_bool_default(
             os.getenv("NEWS_X_MONITOR_ENABLED"), False  # Nitter is defunct; off by default

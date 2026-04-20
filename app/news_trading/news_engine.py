@@ -53,8 +53,13 @@ _COOLDOWN_MINUTES = 30
 _MAX_SYMBOLS_PER_EVENT = 3
 _SEMAPHORE_LIMIT = 5
 _HISTORICAL_LOOKBACK_DAYS = 30
-_MAX_NEWS_AGE_MINUTES = 5  # all sources: reject anything older than 5 minutes
-_SOURCE_MAX_AGE: dict = {}  # reserved for future per-source tuning
+_MAX_NEWS_AGE_MINUTES = 5  # default max age (minutes) before a headline is stale
+# Social streams: allow slightly older posts (ingest delay, clock skew, reposts).
+_SOURCE_MAX_AGE: dict = {
+    "bluesky/": 15,
+    "x/": 15,
+    "truthsocial/": 15,
+}
 
 
 class NewsTradeEngine:
@@ -198,6 +203,18 @@ class NewsTradeEngine:
             print("[News] WARNING: No news sources configured. Check your .env.", flush=True)
 
         print("[News] Waiting for events...", flush=True)
+        if self.config.news_telegram_social_posts and self._telegram_cfg.enabled:
+            ok, err = await send_telegram_message(
+                self._telegram_cfg,
+                "📡 News engine is live.\n"
+                "You should get a message here for each fresh Bluesky / X / Truth post "
+                "(not from /run). If you only see this once, no posts passed filters yet.",
+            )
+            if not ok:
+                print(
+                    f"[News] Startup Telegram ping failed: {err or 'unknown'}",
+                    flush=True,
+                )
 
         if sources:
             results = await asyncio.gather(*sources, return_exceptions=True)

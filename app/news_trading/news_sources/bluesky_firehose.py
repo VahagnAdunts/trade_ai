@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 import httpx
@@ -121,9 +122,10 @@ class BlueskyFirehose:
                         if resp.status_code == 200:
                             data = resp.json()
                             did = data.get("did")
-                            followers = data.get("followersCount", 0)
-                            posts = data.get("postsCount", 0)
-                            if not did or posts == 0 or followers < 100:
+                            # Only require a DID. Do not gate on followers/posts — the API
+                            # often omits counts (treated as 0), which incorrectly dropped valid
+                            # news accounts and left Jetstream filtering too few repos.
+                            if not did:
                                 return None
                             display = data.get("displayName") or label
                             return (display, handle, did)
@@ -192,8 +194,7 @@ class BlueskyFirehose:
 
         did = event.get("did", "")
         record = commit.get("record", {})
-        text = (record.get("text") or "").strip()
-        if not text or not did:
+        if not did:
             return
 
         # Skip replies — we want original content only
@@ -209,7 +210,19 @@ class BlueskyFirehose:
         self._seen_uris.add(uri)
 
         label, handle = self._did_to_account.get(did, ("Unknown", did))
-        created_at = record.get("createdAt") or ""
+        text = (record.get("text") or "").strip()
+        if not text:
+            text = "[media or link-only post]"
+
+        created_at = (record.get("createdAt") or "").strip()
+        if not created_at:
+            time_us = event.get("time_us")
+            if isinstance(time_us, int) and time_us > 0:
+                created_at = datetime.fromtimestamp(
+                    time_us / 1_000_000.0, tz=timezone.utc
+                ).isoformat()
+        if not created_at:
+            created_at = datetime.now(timezone.utc).isoformat()
         web_url = (
             f"https://bsky.app/profile/{handle}/post/{rkey}"
             if handle and rkey

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Awaitable, Callable, Dict, List, Optional, Set, Tuple
@@ -22,11 +23,12 @@ from typing import Awaitable, Callable, Dict, List, Optional, Set, Tuple
 import httpx
 
 _SYND_URL = "https://syndication.twitter.com/srv/timeline-profile/screen-name"
-_POLL_INTERVAL = 60.0          # seconds between batches
-_INTER_BATCH_DELAY = 8.0       # seconds between individual requests in a batch
-_ACCOUNTS_PER_BATCH = 3        # small batches to avoid 429
+_POLL_INTERVAL = 120.0         # seconds between batch cycles (X syndication is aggressively limited)
+_INTER_BATCH_DELAY = 20.0      # seconds between requests within a batch
+_ACCOUNTS_PER_BATCH = 2        # smaller batches reduce burst 429s from shared IP
 _REQUEST_TIMEOUT = 15.0
-_ACCOUNT_BACKOFF = 300.0       # seconds to skip an account after 429 (per-account)
+_ACCOUNT_BACKOFF = 600.0       # seconds to skip an account after 429 (per-handle)
+_BATCH_429_COOLDOWN = 120.0    # extra pause when multiple 429s in one batch (shared limiter)
 
 _HEADERS = {
     "User-Agent": (
@@ -111,9 +113,9 @@ class XSyndicationMonitor:
                     if not self._running:
                         break
                     ok, detail = await self._poll_account(label, handle)
-                    if not ok and detail:
+                    if not ok and detail and detail != "rate_backoff":
                         issues.append(f"{handle}:{detail}")
-                    # Small delay between requests to avoid 429
+                    # Space out requests — syndication is easy to 429 by IP + burst
                     await asyncio.sleep(_INTER_BATCH_DELAY)
 
                 if issues:
@@ -124,6 +126,14 @@ class XSyndicationMonitor:
                         f"{len(issues)}/{len(batch)} issues — {preview}{more}",
                         flush=True,
                     )
+                    n429 = sum(1 for x in issues if "HTTP429" in x)
+                    if n429 >= 2 or n429 == len(batch):
+                        print(
+                            f"[News] X/Syndication: {n429}× HTTP429 in batch — "
+                            f"extra cooldown {_BATCH_429_COOLDOWN:.0f}s",
+                            flush=True,
+                        )
+                        await asyncio.sleep(_BATCH_429_COOLDOWN)
 
                 if batch_idx == len(batches) - 1:
                     primed = len(self._bootstrapped)
@@ -152,8 +162,6 @@ class XSyndicationMonitor:
         self, label: str, handle: str
     ) -> Tuple[bool, str]:
         """Fetch timeline for one handle. Returns (ok, detail)."""
-        import time
-
         # Respect per-account rate-limit backoff
         now_mono = time.monotonic()
         if now_mono < self._account_backoff.get(handle, 0.0):
@@ -163,6 +171,7 @@ class XSyndicationMonitor:
             async with httpx.AsyncClient(
                 timeout=_REQUEST_TIMEOUT,
                 follow_redirects=True,
+                trust_env=True,
             ) as client:
                 resp = await client.get(
                     f"{_SYND_URL}/{handle}",
@@ -170,8 +179,14 @@ class XSyndicationMonitor:
                 )
 
                 if resp.status_code == 429:
-                    # Back off this account for 5 minutes; others continue unaffected
-                    self._account_backoff[handle] = time.monotonic() + _ACCOUNT_BACKOFF
+                    wait_s = float(_ACCOUNT_BACKOFF)
+                    ra = resp.headers.get("Retry-After")
+                    if ra:
+                        try:
+                            wait_s = max(wait_s, float(ra))
+                        except ValueError:
+                            pass
+                    self._account_backoff[handle] = time.monotonic() + wait_s
                     return False, "HTTP429"
 
                 if resp.status_code != 200:

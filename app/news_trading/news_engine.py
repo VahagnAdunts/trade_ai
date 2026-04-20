@@ -137,8 +137,15 @@ class NewsTradeEngine:
                 ts_mon = create_truth_social_monitor(self._on_news_item)
                 sources.append(ts_mon.start())
 
-        # ── Bluesky (free AT Protocol — works with any source mode) ──
-        if self.config.news_bluesky_enabled:
+        # ── Bluesky: real-time Jetstream firehose (preferred) ─────────────
+        # Falls back to polling-based monitor if firehose disabled.
+        if self.config.news_bluesky_firehose_enabled:
+            from app.news_trading.news_sources.bluesky_firehose import (
+                create_bluesky_firehose,
+            )
+            bsky_fh = create_bluesky_firehose(self._on_news_item)
+            sources.append(bsky_fh.start())
+        elif self.config.news_bluesky_enabled:
             from app.news_trading.news_sources.bluesky_monitor import create_bluesky_monitor
             bsky = create_bluesky_monitor(self._on_news_item)
             sources.append(bsky.start())

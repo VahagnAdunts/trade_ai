@@ -61,6 +61,7 @@ class AppConfig:
     x_bearer_token: Optional[str]
     news_truth_social_enabled: bool
     news_bluesky_enabled: bool
+    news_bluesky_firehose_enabled: bool
     news_x_syndication_enabled: bool
     news_x_monitor_enabled: bool
 
@@ -151,6 +152,9 @@ class AppConfig:
         news_bluesky_enabled = _parse_bool_default(
             os.getenv("NEWS_BLUESKY_ENABLED"), True
         )
+        news_bluesky_firehose_enabled = _parse_bool_default(
+            os.getenv("NEWS_BLUESKY_FIREHOSE_ENABLED"), True
+        )
         news_x_syndication_enabled = _parse_bool_default(
             os.getenv("NEWS_X_SYNDICATION_ENABLED"), False  # blocked on cloud/datacenter IPs
         )
@@ -205,6 +209,7 @@ class AppConfig:
             x_bearer_token=x_bearer_token,
             news_truth_social_enabled=news_truth_social_enabled,
             news_bluesky_enabled=news_bluesky_enabled,
+            news_bluesky_firehose_enabled=news_bluesky_firehose_enabled,
             news_x_syndication_enabled=news_x_syndication_enabled,
             news_x_monitor_enabled=news_x_monitor_enabled,
         )

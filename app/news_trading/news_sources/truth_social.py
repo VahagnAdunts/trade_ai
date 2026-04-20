@@ -13,7 +13,7 @@ from typing import Awaitable, Callable, Dict, List, Optional, Set
 import httpx
 
 _BASE_URL = "https://truthsocial.com/api/v1"
-_POLL_INTERVAL = 30.0
+_POLL_INTERVAL = 10.0   # seconds — aggressive polling, single account
 
 # Full browser headers required — Cloudflare blocks requests missing Sec-* headers.
 _HEADERS = {

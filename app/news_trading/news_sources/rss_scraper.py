@@ -24,7 +24,7 @@ import asyncio
 import re
 from typing import Awaitable, Callable, List, Optional, Set, Tuple
 
-_POLL_INTERVAL = 30.0   # seconds — faster than before (was 90s), primary sources
+_POLL_INTERVAL = 10.0   # seconds — aggressive polling for primary-source feeds
 
 # (label, url, ticker_filter)
 # ticker_filter=True  → only forward if a known ticker/company name found

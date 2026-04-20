@@ -62,7 +62,9 @@ class AppConfig:
     news_truth_social_enabled: bool
     news_bluesky_enabled: bool
     news_bluesky_firehose_enabled: bool
-    news_x_syndication_enabled: bool
+    news_x_syndication_enabled: bool  # free embed endpoint — often HTTP429 from cloud IPs
+    news_x_api_stream_enabled: bool  # X API v2 filtered stream (needs X_BEARER_TOKEN + access tier)
+    news_x_syndication_force: bool  # run syndication even when Bluesky firehose is enabled
     news_x_monitor_enabled: bool
 
     @staticmethod
@@ -158,6 +160,12 @@ class AppConfig:
         news_x_syndication_enabled = _parse_bool_default(
             os.getenv("NEWS_X_SYNDICATION_ENABLED"), False  # blocked on cloud/datacenter IPs
         )
+        news_x_api_stream_enabled = _parse_bool_default(
+            os.getenv("NEWS_X_API_STREAM_ENABLED"), False
+        )
+        news_x_syndication_force = _parse_bool_default(
+            os.getenv("NEWS_X_SYNDICATION_FORCE"), False
+        )
         news_x_monitor_enabled = _parse_bool_default(
             os.getenv("NEWS_X_MONITOR_ENABLED"), False  # Nitter is defunct; off by default
         )
@@ -211,6 +219,8 @@ class AppConfig:
             news_bluesky_enabled=news_bluesky_enabled,
             news_bluesky_firehose_enabled=news_bluesky_firehose_enabled,
             news_x_syndication_enabled=news_x_syndication_enabled,
+            news_x_api_stream_enabled=news_x_api_stream_enabled,
+            news_x_syndication_force=news_x_syndication_force,
             news_x_monitor_enabled=news_x_monitor_enabled,
         )
 

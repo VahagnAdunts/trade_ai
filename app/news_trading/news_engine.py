@@ -92,7 +92,8 @@ class NewsTradeEngine:
         if mode == "both":
             print(
                 "[News] NEWS_SOURCE_MODE=both: classical feeds (RSS + optional Alpaca WS / Polygon / "
-                "CryptoPanic) and social feeds (X via Nitter, optional Truth Social) run in parallel.",
+                "CryptoPanic) and social paths (Bluesky firehose, optional X API stream / syndication / "
+                "Nitter, Truth Social) as configured.",
                 flush=True,
             )
 
@@ -150,11 +151,36 @@ class NewsTradeEngine:
             bsky = create_bluesky_monitor(self._on_news_item)
             sources.append(bsky.start())
 
-        # ── X/Twitter via free syndication API (no API key needed) ──
-        if self.config.news_x_syndication_enabled:
-            from app.news_trading.news_sources.x_syndication import create_x_syndication_monitor
-            xsyn = create_x_syndication_monitor(self._on_news_item)
-            sources.append(xsyn.start())
+        # ── X/Twitter: official filtered stream (fast, reliable) OR syndication (429-prone) ──
+        bearer = (self.config.x_bearer_token or "").strip()
+        if self.config.news_x_api_stream_enabled and bearer:
+            from app.news_trading.news_sources.x_api_stream import create_x_filtered_stream
+
+            sources.append(create_x_filtered_stream(bearer, self._on_news_item).start())
+        elif self.config.news_x_api_stream_enabled and not bearer:
+            print(
+                "[News] NEWS_X_API_STREAM_ENABLED=true but X_BEARER_TOKEN is empty — "
+                "cannot start X filtered stream",
+                flush=True,
+            )
+        elif self.config.news_x_syndication_enabled:
+            skip_synd = (
+                self.config.news_bluesky_firehose_enabled
+                and not self.config.news_x_syndication_force
+            )
+            if skip_synd:
+                print(
+                    "[News] X/Syndication skipped: Bluesky Firehose already gives real-time posts. "
+                    "Syndication is slow and returns HTTP429 on many hosts. Options: "
+                    "(1) NEWS_X_API_STREAM_ENABLED=true + X_BEARER_TOKEN for official X streaming, "
+                    "(2) NEWS_X_SYNDICATION_FORCE=true to force syndication anyway.",
+                    flush=True,
+                )
+            else:
+                from app.news_trading.news_sources.x_syndication import create_x_syndication_monitor
+
+                xsyn = create_x_syndication_monitor(self._on_news_item)
+                sources.append(xsyn.start())
 
         # ── Truth Social (independent of X mode — always run if enabled) ──
         if self.config.news_truth_social_enabled and not use_x:

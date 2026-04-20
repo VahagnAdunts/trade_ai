@@ -68,6 +68,8 @@ class AppConfig:
     news_x_monitor_enabled: bool
     # Telegram: send a message for every fresh Bluesky/X/Truth post (not only when a ticker is found)
     news_telegram_social_posts: bool
+    # Telegram: send every social item before dedup/staleness/asset gates (loud; for testing only)
+    news_telegram_debug_social_raw: bool
 
     @staticmethod
     def from_env() -> "AppConfig":
@@ -174,6 +176,9 @@ class AppConfig:
         news_telegram_social_posts = _parse_bool_default(
             os.getenv("NEWS_TELEGRAM_SOCIAL_POSTS"), True
         )
+        news_telegram_debug_social_raw = _parse_bool_default(
+            os.getenv("NEWS_TELEGRAM_DEBUG_SOCIAL_RAW"), False
+        )
 
         return AppConfig(
             stock_data_api_key=_required("STOCK_DATA_API_KEY"),
@@ -228,6 +233,7 @@ class AppConfig:
             news_x_syndication_force=news_x_syndication_force,
             news_x_monitor_enabled=news_x_monitor_enabled,
             news_telegram_social_posts=news_telegram_social_posts,
+            news_telegram_debug_social_raw=news_telegram_debug_social_raw,
         )
 
     def twelve_data_api_keys(self) -> List[str]:

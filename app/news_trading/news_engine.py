@@ -94,6 +94,12 @@ class NewsTradeEngine:
                 "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID is missing — no post alerts will be delivered.",
                 flush=True,
             )
+        if self.config.news_telegram_debug_social_raw:
+            print(
+                "[News] NEWS_TELEGRAM_DEBUG_SOCIAL_RAW=true — sending every Bluesky/X/Truth "
+                "payload to Telegram before filters (testing; turn off to reduce noise).",
+                flush=True,
+            )
 
         sources = []
 
@@ -208,7 +214,9 @@ class NewsTradeEngine:
                 self._telegram_cfg,
                 "📡 News engine is live.\n"
                 "You should get a message here for each fresh Bluesky / X / Truth post "
-                "(not from /run). If you only see this once, no posts passed filters yet.",
+                "(not from /run). If you only see this once, no posts passed filters yet.\n"
+                "Testing: set NEWS_TELEGRAM_DEBUG_SOCIAL_RAW=true to Telegram every raw social "
+                "item before dedup/stale checks.",
             )
             if not ok:
                 print(
@@ -235,7 +243,13 @@ class NewsTradeEngine:
         headline = news_item.get("headline", "")
         symbols = list(news_item.get("symbols", []))
         asset_class = news_item.get("asset_class", "equity")
+        source = (news_item.get("source") or "").strip()
         raw_published_at = str(news_item.get("published_at") or news_item.get("created_at") or "").strip()
+
+        debug_raw_sent = False
+        if self.config.news_telegram_debug_social_raw and _is_social_feed_source(source):
+            await self._notify_social_debug_raw(news_item)
+            debug_raw_sent = True
 
         # Asset class gating
         if asset_class == "equity" and not self.config.news_equity_enabled:
@@ -277,8 +291,11 @@ class NewsTradeEngine:
         classification = classify_event(headline, symbols, asset_class)
 
         # If no symbols were tagged by the source, use fast LLM to extract one
-        source = (news_item.get("source") or "").strip()
-        if self.config.news_telegram_social_posts and _is_social_feed_source(source):
+        if (
+            self.config.news_telegram_social_posts
+            and _is_social_feed_source(source)
+            and not debug_raw_sent
+        ):
             await self._notify_social_feed_post(headline, source, news_item.get("url", ""))
 
         if not symbols:
@@ -292,7 +309,8 @@ class NewsTradeEngine:
                 flush=True,
             )
             if not (
-                self.config.news_telegram_social_posts and _is_social_feed_source(source)
+                (self.config.news_telegram_social_posts or self.config.news_telegram_debug_social_raw)
+                and _is_social_feed_source(source)
             ):
                 await self._notify_new_post(
                     headline=headline,
@@ -684,6 +702,34 @@ class NewsTradeEngine:
             "per_model": per_model,
             "supporter_count": len(supporters),
         }
+
+    async def _notify_social_debug_raw(self, news_item: dict) -> None:
+        """Telegram a copy of the payload before dedup/staleness/asset filters (testing)."""
+        hl = str(news_item.get("headline", ""))[:500]
+        src = str(news_item.get("source", ""))
+        url = str(news_item.get("url") or "").strip()
+        pub = str(news_item.get("published_at") or news_item.get("created_at") or "")
+        summ = str(news_item.get("summary", ""))[:400]
+        sym = news_item.get("symbols", [])
+        ac = str(news_item.get("asset_class", ""))
+        msg = (
+            "🧪 DEBUG raw (before dedup / stale / asset filters)\n"
+            f"{src}\n"
+            f"asset_class: {ac}\n"
+            f"published_at: {pub}\n"
+            f"symbols: {sym}\n"
+            f"\"{hl}\"\n"
+            f"{summ}"
+            + (f"\n🔗 {url}" if url else "")
+        )
+        if len(msg) > 4090:
+            msg = msg[:4080] + "\n…(truncated)"
+        ok, err = await send_telegram_message(self._telegram_cfg, msg)
+        if not ok:
+            print(
+                f"[News] Telegram DEBUG raw notify failed: {err or 'telegram disabled'}",
+                flush=True,
+            )
 
     async def _notify_social_feed_post(
         self, headline: str, source: str, url: str

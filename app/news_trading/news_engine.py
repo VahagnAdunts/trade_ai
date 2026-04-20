@@ -83,6 +83,12 @@ class NewsTradeEngine:
         self._running = True
         mode = self.config.news_source_mode
         print(f"[News] Engine starting... (source_mode={mode})", flush=True)
+        if self.config.news_telegram_social_posts and not self._telegram_cfg.enabled:
+            print(
+                "[News] NEWS_TELEGRAM_SOCIAL_POSTS is on but Telegram is disabled or "
+                "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID is missing — no post alerts will be delivered.",
+                flush=True,
+            )
 
         sources = []
 
@@ -255,6 +261,9 @@ class NewsTradeEngine:
 
         # If no symbols were tagged by the source, use fast LLM to extract one
         source = (news_item.get("source") or "").strip()
+        if self.config.news_telegram_social_posts and _is_social_feed_source(source):
+            await self._notify_social_feed_post(headline, source, news_item.get("url", ""))
+
         if not symbols:
             fast = await self._fast_llm_classify(headline, news_item.get("summary", ""))
             if not fast.get("is_relevant") or not fast.get("symbol"):
@@ -265,13 +274,16 @@ class NewsTradeEngine:
                 f"[News] Fast LLM identified symbol {symbols[0]} — {fast.get('reason', '')}",
                 flush=True,
             )
-            await self._notify_new_post(
-                headline=headline,
-                source=source,
-                symbol=symbols[0],
-                reason=fast.get("reason", ""),
-                url=news_item.get("url", ""),
-            )
+            if not (
+                self.config.news_telegram_social_posts and _is_social_feed_source(source)
+            ):
+                await self._notify_new_post(
+                    headline=headline,
+                    source=source,
+                    symbol=symbols[0],
+                    reason=fast.get("reason", ""),
+                    url=news_item.get("url", ""),
+                )
 
         # Full LLM consensus and trades only during NYSE RTH for equities (crypto 24/7)
         if asset_class == "equity" and not _nyse_is_open():
@@ -655,6 +667,18 @@ class NewsTradeEngine:
             "per_model": per_model,
             "supporter_count": len(supporters),
         }
+
+    async def _notify_social_feed_post(
+        self, headline: str, source: str, url: str
+    ) -> None:
+        url_line = f"\n🔗 {url}" if (url or "").strip() else ""
+        msg = f"📣 Social post\n{source}\n\"{headline[:400]}\"{url_line}"
+        ok, err = await send_telegram_message(self._telegram_cfg, msg)
+        if not ok:
+            print(
+                f"[News] Telegram social-feed notify failed: {err or 'telegram disabled'}",
+                flush=True,
+            )
 
     async def _notify_new_post(
         self,
@@ -1106,6 +1130,15 @@ class _NewsHistoricalProvider:
 def _is_trading_halt_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return "trading halt" in text or "halt on symbol" in text
+
+
+def _is_social_feed_source(source: str) -> bool:
+    s = (source or "").lower()
+    return (
+        s.startswith("bluesky/")
+        or s.startswith("x/")
+        or s.startswith("truthsocial/")
+    )
 
 
 def _is_news_stale(news_item: dict) -> tuple[bool, float]:

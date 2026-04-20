@@ -66,6 +66,8 @@ class AppConfig:
     news_x_api_stream_enabled: bool  # X API v2 filtered stream (needs X_BEARER_TOKEN + access tier)
     news_x_syndication_force: bool  # run syndication even when Bluesky firehose is enabled
     news_x_monitor_enabled: bool
+    # Telegram: send a message for every fresh Bluesky/X/Truth post (not only when a ticker is found)
+    news_telegram_social_posts: bool
 
     @staticmethod
     def from_env() -> "AppConfig":
@@ -169,6 +171,9 @@ class AppConfig:
         news_x_monitor_enabled = _parse_bool_default(
             os.getenv("NEWS_X_MONITOR_ENABLED"), False  # Nitter is defunct; off by default
         )
+        news_telegram_social_posts = _parse_bool_default(
+            os.getenv("NEWS_TELEGRAM_SOCIAL_POSTS"), True
+        )
 
         return AppConfig(
             stock_data_api_key=_required("STOCK_DATA_API_KEY"),
@@ -222,6 +227,7 @@ class AppConfig:
             news_x_api_stream_enabled=news_x_api_stream_enabled,
             news_x_syndication_force=news_x_syndication_force,
             news_x_monitor_enabled=news_x_monitor_enabled,
+            news_telegram_social_posts=news_telegram_social_posts,
         )
 
     def twelve_data_api_keys(self) -> List[str]:

@@ -62,6 +62,8 @@ class AppConfig:
     news_truth_social_enabled: bool
     news_bluesky_enabled: bool
     news_bluesky_firehose_enabled: bool
+    # Jetstream: replay N seconds of history on connect (0=live only). Helps verify the pipe when accounts are quiet.
+    news_bluesky_jetstream_replay_seconds: int
     news_x_syndication_enabled: bool  # free embed endpoint — often HTTP429 from cloud IPs
     news_x_api_stream_enabled: bool  # X API v2 filtered stream (needs X_BEARER_TOKEN + access tier)
     news_x_syndication_force: bool  # run syndication even when Bluesky firehose is enabled
@@ -161,6 +163,12 @@ class AppConfig:
         news_bluesky_firehose_enabled = _parse_bool_default(
             os.getenv("NEWS_BLUESKY_FIREHOSE_ENABLED"), True
         )
+        news_bluesky_jetstream_replay_seconds = min(
+            _parse_positive_int_default(
+                os.getenv("NEWS_BLUESKY_JETSTREAM_REPLAY_SECONDS"), 0
+            ),
+            86400,
+        )
         news_x_syndication_enabled = _parse_bool_default(
             os.getenv("NEWS_X_SYNDICATION_ENABLED"), False  # blocked on cloud/datacenter IPs
         )
@@ -228,6 +236,7 @@ class AppConfig:
             news_truth_social_enabled=news_truth_social_enabled,
             news_bluesky_enabled=news_bluesky_enabled,
             news_bluesky_firehose_enabled=news_bluesky_firehose_enabled,
+            news_bluesky_jetstream_replay_seconds=news_bluesky_jetstream_replay_seconds,
             news_x_syndication_enabled=news_x_syndication_enabled,
             news_x_api_stream_enabled=news_x_api_stream_enabled,
             news_x_syndication_force=news_x_syndication_force,

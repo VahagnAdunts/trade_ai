@@ -19,11 +19,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from urllib.parse import quote
 
 import httpx
 import websockets
+
+from app.telegram_notifier import TelegramConfig, send_telegram_message
 
 from app.news_trading.news_sources.bluesky_monitor import (
     BLUESKY_CANDIDATES,
@@ -38,11 +43,29 @@ _RECONNECT_DELAY = 5.0
 
 
 class BlueskyFirehose:
-    def __init__(self, on_news: Callable[[dict], Awaitable[None]]) -> None:
+    def __init__(
+        self,
+        on_news: Callable[[dict], Awaitable[None]],
+        *,
+        jetstream_replay_seconds: int = 0,
+        telegram_wire_cfg: Optional[TelegramConfig] = None,
+        telegram_wire_enabled: bool = False,
+    ) -> None:
         self._on_news = on_news
+        self._jetstream_replay_seconds = max(0, int(jetstream_replay_seconds))
+        self._telegram_wire_cfg = telegram_wire_cfg
+        self._telegram_wire_enabled = bool(
+            telegram_wire_enabled
+            and telegram_wire_cfg
+            and telegram_wire_cfg.enabled
+            and telegram_wire_cfg.bot_token
+            and telegram_wire_cfg.chat_id
+        )
         self._running = False
         self._did_to_account: Dict[str, Tuple[str, str]] = {}  # did → (label, handle)
         self._seen_uris: Set[str] = set()
+        self._stat_ws_lines = 0
+        self._stat_posts_out = 0
 
     async def start(self) -> None:
         self._running = True
@@ -147,35 +170,63 @@ class BlueskyFirehose:
 
     async def _consume_firehose(self, dids: List[str]) -> None:
         """Open WebSocket to Jetstream and process events as they stream in."""
-        # Build URL with filters: posts only + our target DIDs
+        # Encode DIDs — unencoded ':' in query strings breaks some proxies / URL stacks.
         params = ["wantedCollections=app.bsky.feed.post"]
-        params.extend(f"wantedDids={did}" for did in dids)
-        url = f"{_JETSTREAM_URL}?{'&'.join(params)}"
-
-        print("[News] Bluesky Firehose connecting...", flush=True)
-
-        # max_size=8MB just in case (typical post events are <2KB)
-        async with websockets.connect(
-            url,
-            max_size=8 * 1024 * 1024,
-            ping_interval=20,
-            ping_timeout=20,
-        ) as ws:
+        params.extend(f"wantedDids={quote(did, safe='')}" for did in dids)
+        if self._jetstream_replay_seconds > 0:
+            cur = int((time.time() - self._jetstream_replay_seconds) * 1_000_000)
+            params.append(f"cursor={cur}")
             print(
-                "[News] Bluesky Firehose connected — streaming live posts",
+                f"[News] Bluesky Jetstream cursor=replay last {self._jetstream_replay_seconds}s "
+                f"(cursor={cur})",
                 flush=True,
             )
-            async for message in ws:
-                if not self._running:
-                    break
-                try:
-                    await self._process_event(message)
-                except Exception as exc:
-                    print(
-                        f"[News] Bluesky Firehose event error: "
-                        f"{type(exc).__name__}: {exc}",
-                        flush=True,
-                    )
+        url = f"{_JETSTREAM_URL}?{'&'.join(params)}"
+        print(
+            f"[News] Bluesky Firehose connecting… (url_len={len(url)} dids={len(dids)})",
+            flush=True,
+        )
+
+        async def _stats_loop() -> None:
+            while self._running:
+                await asyncio.sleep(90)
+                print(
+                    "[News] Bluesky Jetstream stats: "
+                    f"websocket_lines={self._stat_ws_lines} "
+                    f"posts_forwarded_to_engine={self._stat_posts_out}",
+                    flush=True,
+                )
+
+        stats_task = asyncio.create_task(_stats_loop())
+
+        # max_size=8MB just in case (typical post events are <2KB)
+        try:
+            async with websockets.connect(
+                url,
+                max_size=8 * 1024 * 1024,
+                ping_interval=20,
+                ping_timeout=20,
+            ) as ws:
+                print(
+                    "[News] Bluesky Firehose connected — streaming live posts",
+                    flush=True,
+                )
+                async for message in ws:
+                    if not self._running:
+                        break
+                    self._stat_ws_lines += 1
+                    try:
+                        await self._process_event(message)
+                    except Exception as exc:
+                        print(
+                            f"[News] Bluesky Firehose event error: "
+                            f"{type(exc).__name__}: {exc}",
+                            flush=True,
+                        )
+        finally:
+            stats_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await stats_task
 
     async def _process_event(self, raw) -> None:
         """Decode + filter + forward a single Jetstream event."""
@@ -193,8 +244,11 @@ class BlueskyFirehose:
             return
 
         did = event.get("did", "")
-        record = commit.get("record", {})
+        raw_record = commit.get("record", {})
+        record = raw_record if isinstance(raw_record, dict) else {}
         if not did:
+            return
+        if did not in self._did_to_account:
             return
 
         # Skip replies — we want original content only
@@ -245,10 +299,34 @@ class BlueskyFirehose:
         if len(self._seen_uris) > 5000:
             self._seen_uris = set(list(self._seen_uris)[-2500:])
 
+        if self._telegram_wire_enabled and self._telegram_wire_cfg:
+            preview = (
+                "🛰️ Bluesky Jetstream (before news engine)\n"
+                f"{handle}\n{text[:400]}\n{web_url}"
+            )
+            ok, err = await send_telegram_message(
+                self._telegram_wire_cfg, preview[:4090]
+            )
+            if not ok:
+                print(
+                    f"[News] Bluesky wire Telegram failed: {err or 'disabled'}",
+                    flush=True,
+                )
+
+        self._stat_posts_out += 1
         await self._on_news(item)
 
 
 def create_bluesky_firehose(
     on_news: Callable[[dict], Awaitable[None]],
+    *,
+    jetstream_replay_seconds: int = 0,
+    telegram_wire_cfg: Optional[TelegramConfig] = None,
+    telegram_wire_enabled: bool = False,
 ) -> BlueskyFirehose:
-    return BlueskyFirehose(on_news)
+    return BlueskyFirehose(
+        on_news,
+        jetstream_replay_seconds=jetstream_replay_seconds,
+        telegram_wire_cfg=telegram_wire_cfg,
+        telegram_wire_enabled=telegram_wire_enabled,
+    )

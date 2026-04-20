@@ -96,8 +96,9 @@ class NewsTradeEngine:
             )
         if self.config.news_telegram_debug_social_raw:
             print(
-                "[News] NEWS_TELEGRAM_DEBUG_SOCIAL_RAW=true — sending every Bluesky/X/Truth "
-                "payload to Telegram before filters (testing; turn off to reduce noise).",
+                "[News] NEWS_TELEGRAM_DEBUG_SOCIAL_RAW=true — Bluesky: Telegram from Jetstream "
+                "before the news engine; X/Truth: full raw in-engine. "
+                "Use NEWS_BLUESKY_JETSTREAM_REPLAY_SECONDS=600 to replay recent posts for testing.",
                 flush=True,
             )
 
@@ -161,7 +162,13 @@ class NewsTradeEngine:
             from app.news_trading.news_sources.bluesky_firehose import (
                 create_bluesky_firehose,
             )
-            bsky_fh = create_bluesky_firehose(self._on_news_item)
+            wire = self.config.news_telegram_debug_social_raw and self._telegram_cfg.enabled
+            bsky_fh = create_bluesky_firehose(
+                self._on_news_item,
+                jetstream_replay_seconds=self.config.news_bluesky_jetstream_replay_seconds,
+                telegram_wire_cfg=self._telegram_cfg if wire else None,
+                telegram_wire_enabled=wire,
+            )
             sources.append(bsky_fh.start())
         elif self.config.news_bluesky_enabled:
             from app.news_trading.news_sources.bluesky_monitor import create_bluesky_monitor
@@ -248,8 +255,12 @@ class NewsTradeEngine:
 
         debug_raw_sent = False
         if self.config.news_telegram_debug_social_raw and _is_social_feed_source(source):
-            await self._notify_social_debug_raw(news_item)
-            debug_raw_sent = True
+            # Bluesky short "wire" Telegram is sent inside the firehose before this callback.
+            if self._telegram_cfg.enabled and source.lower().startswith("bluesky/"):
+                debug_raw_sent = True
+            else:
+                await self._notify_social_debug_raw(news_item)
+                debug_raw_sent = True
 
         # Asset class gating
         if asset_class == "equity" and not self.config.news_equity_enabled:

@@ -23,12 +23,14 @@ from typing import Awaitable, Callable, Dict, List, Optional, Set, Tuple
 import httpx
 
 _SYND_URL = "https://syndication.twitter.com/srv/timeline-profile/screen-name"
-_POLL_INTERVAL = 120.0         # seconds between batch cycles (X syndication is aggressively limited)
-_INTER_BATCH_DELAY = 20.0      # seconds between requests within a batch
-_ACCOUNTS_PER_BATCH = 2        # smaller batches reduce burst 429s from shared IP
+_POLL_INTERVAL = 180.0         # seconds between batch cycles (syndication is heavily IP-limited)
+_INTER_BATCH_DELAY = 25.0      # seconds after each response before next attempt in-loop
+_ACCOUNTS_PER_BATCH = 2        # small batches
 _REQUEST_TIMEOUT = 15.0
-_ACCOUNT_BACKOFF = 600.0       # seconds to skip an account after 429 (per-handle)
-_BATCH_429_COOLDOWN = 120.0    # extra pause when multiple 429s in one batch (shared limiter)
+_ACCOUNT_BACKOFF = 900.0       # seconds to skip a handle after 429 (15 min)
+_BATCH_429_COOLDOWN = 180.0    # extra pause when a batch hits multiple 429s
+# Minimum time between *starting* two syndication HTTP GETs (global within this process).
+_SYNDICATION_MIN_START_GAP = 35.0
 
 _HEADERS = {
     "User-Agent": (
@@ -92,6 +94,7 @@ class XSyndicationMonitor:
         self._seen_ids: Set[str] = set()
         self._bootstrapped: Set[str] = set()
         self._account_backoff: Dict[str, float] = {}  # handle -> monotonic backoff time
+        self._next_syndication_fetch_mono: float = 0.0  # global pacing for X syndication GETs
 
     async def start(self) -> None:
         self._running = True
@@ -127,7 +130,7 @@ class XSyndicationMonitor:
                         flush=True,
                     )
                     n429 = sum(1 for x in issues if "HTTP429" in x)
-                    if n429 >= 2 or n429 == len(batch):
+                    if n429 >= 1:
                         print(
                             f"[News] X/Syndication: {n429}× HTTP429 in batch — "
                             f"extra cooldown {_BATCH_429_COOLDOWN:.0f}s",
@@ -173,10 +176,19 @@ class XSyndicationMonitor:
                 follow_redirects=True,
                 trust_env=True,
             ) as client:
-                resp = await client.get(
-                    f"{_SYND_URL}/{handle}",
-                    headers=_HEADERS,
-                )
+                now_mono = time.monotonic()
+                gap = self._next_syndication_fetch_mono - now_mono
+                if gap > 0:
+                    await asyncio.sleep(gap)
+                try:
+                    resp = await client.get(
+                        f"{_SYND_URL}/{handle}",
+                        headers=_HEADERS,
+                    )
+                finally:
+                    self._next_syndication_fetch_mono = (
+                        time.monotonic() + _SYNDICATION_MIN_START_GAP
+                    )
 
                 if resp.status_code == 429:
                     wait_s = float(_ACCOUNT_BACKOFF)

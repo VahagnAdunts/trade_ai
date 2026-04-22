@@ -129,49 +129,6 @@ async def _run_from_telegram(config: AppConfig, tg: TelegramConfig) -> None:
                 running = False
 
 
-def _run_news_trading() -> None:
-    from app.news_trading.news_engine import NewsTradeEngine
-    config = AppConfig.from_env()
-    if not config.news_trading_enabled:
-        print(
-            "Set NEWS_TRADING_ENABLED=true in .env to use this mode.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-    print("Starting news trading engine — press Ctrl+C to stop.")
-    engine = NewsTradeEngine(config)
-    try:
-        asyncio.run(engine.start())
-    except KeyboardInterrupt:
-        print("\nNews trading engine stopped.")
-
-
-async def _run_both() -> None:
-    """Run Telegram runner + news trading engine simultaneously."""
-    from app.news_trading.news_engine import NewsTradeEngine
-    config = AppConfig.from_env()
-    print(
-        "[main] /run and /run_crypto only start the multi-LLM equity/crypto analysis job; "
-        "the news engine (if enabled) polls X/RSS/etc. on its own — no /run needed for news alerts.",
-        flush=True,
-    )
-    tg = TelegramConfig(
-        enabled=config.telegram_enabled,
-        bot_token=config.telegram_bot_token,
-        chat_id=config.telegram_chat_id,
-    )
-    engine = NewsTradeEngine(config)
-    results = await asyncio.gather(
-        _run_from_telegram(config, tg),
-        engine.start(),
-        return_exceptions=True,
-    )
-    labels = ("telegram_runner", "news_engine")
-    for label, res in zip(labels, results):
-        if isinstance(res, BaseException):
-            print(f"[main] Task {label} ended with error: {res!r}", flush=True)
-
-
 def _run_serve(host: str, port: int) -> None:
     try:
         import uvicorn
@@ -217,23 +174,9 @@ def main() -> None:
         action="store_true",
         help="Run crypto pipeline (default top-20 USD pairs, outputs under outputs_crypto/)",
     )
-    parser.add_argument(
-        "--news-trade",
-        action="store_true",
-        help="Start real-time news-driven trading engine",
-    )
-    parser.add_argument(
-        "--both",
-        action="store_true",
-        help="Run Telegram runner (/run, /run_crypto) AND news trading engine simultaneously",
-    )
     args = parser.parse_args()
 
-    if args.news_trade:
-        _run_news_trading()
-    elif args.both:
-        asyncio.run(_run_both())
-    elif args.serve:
+    if args.serve:
         _run_serve(args.host, args.port)
     elif args.telegram_runner:
         cfg = AppConfig.from_env()

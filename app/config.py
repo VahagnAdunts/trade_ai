@@ -41,37 +41,6 @@ class AppConfig:
     consensus_min_models: int
     consensus_min_confidence_pct: int
     consensus_min_confidence_crypto_pct: int
-    # ── News trading module (disabled by default) ──────────────────────────────
-    news_trading_enabled: bool
-    news_alpaca_news_enabled: bool
-    news_polygon_api_key: Optional[str]
-    news_crypto_panic_api_key: Optional[str]
-    news_trade_dollars: float
-    news_max_hold_minutes: int
-    news_stop_loss_pct: float
-    news_take_profit_pct: float
-    news_min_confidence_pct: int
-    news_crypto_enabled: bool
-    news_equity_enabled: bool
-    binance_api_key: Optional[str]
-    binance_secret_key: Optional[str]
-    binance_testnet: bool
-    # ── News source mode: "alpaca" (default), "x_stream", or "both" ────────────
-    news_source_mode: str
-    x_bearer_token: Optional[str]
-    news_truth_social_enabled: bool
-    news_bluesky_enabled: bool
-    news_bluesky_firehose_enabled: bool
-    # Jetstream: replay N seconds of history on connect (0=live only). Helps verify the pipe when accounts are quiet.
-    news_bluesky_jetstream_replay_seconds: int
-    news_x_syndication_enabled: bool  # free embed endpoint — often HTTP429 from cloud IPs
-    news_x_api_stream_enabled: bool  # X API v2 filtered stream (needs X_BEARER_TOKEN + access tier)
-    news_x_syndication_force: bool  # run syndication even when Bluesky firehose is enabled
-    news_x_monitor_enabled: bool
-    # Telegram: send a message for every fresh Bluesky/X/Truth post (not only when a ticker is found)
-    news_telegram_social_posts: bool
-    # Telegram: send every social item before dedup/staleness/asset gates (loud; for testing only)
-    news_telegram_debug_social_raw: bool
 
     @staticmethod
     def from_env() -> "AppConfig":
@@ -121,72 +90,8 @@ class AppConfig:
             "CONSENSUS_MIN_CONFIDENCE_CRYPTO_PERCENT",
         )
 
-        # News trading — all optional with safe defaults so existing users are not broken
-        news_trading_enabled = _parse_bool_default(os.getenv("NEWS_TRADING_ENABLED"), False)
-        news_alpaca_news_enabled = _parse_bool_default(os.getenv("NEWS_ALPACA_ENABLED"), True)
-        news_polygon_api_key = _parse_optional_str(os.getenv("NEWS_POLYGON_API_KEY"))
-        news_crypto_panic_api_key = _parse_optional_str(os.getenv("NEWS_CRYPTO_PANIC_API_KEY"))
-        news_trade_dollars = _parse_positive_float_default(
-            os.getenv("NEWS_TRADE_DOLLARS"), 200.0
-        )
-        news_max_hold_minutes = _parse_positive_int_default(
-            os.getenv("NEWS_MAX_HOLD_MINUTES"), 60
-        )
-        news_stop_loss_pct = _parse_positive_float_default(
-            os.getenv("NEWS_STOP_LOSS_PCT"), 0.8
-        )
-        news_take_profit_pct = _parse_positive_float_default(
-            os.getenv("NEWS_TAKE_PROFIT_PCT"), 2.0
-        )
-        news_min_confidence_pct = _parse_confidence_pct_default(
-            os.getenv("NEWS_MIN_CONFIDENCE_PCT"), 70
-        )
-        news_crypto_enabled = _parse_bool_default(os.getenv("NEWS_CRYPTO_ENABLED"), False)
-        news_equity_enabled = _parse_bool_default(os.getenv("NEWS_EQUITY_ENABLED"), True)
-        binance_api_key = _parse_optional_str(os.getenv("BINANCE_API_KEY"))
-        binance_secret_key = _parse_optional_str(os.getenv("BINANCE_SECRET_KEY"))
-        binance_testnet = _parse_bool_default(os.getenv("BINANCE_TESTNET"), True)
-
         stock_data_secondary = _parse_optional_str(os.getenv("STOCK_DATA_API_KEY_SECONDARY"))
         stock_data_tertiary = _parse_optional_str(os.getenv("STOCK_DATA_API_KEY_TERTIARY"))
-
-        news_source_mode_raw = (os.getenv("NEWS_SOURCE_MODE") or "alpaca").strip().lower()
-        if news_source_mode_raw not in ("alpaca", "x_stream", "both"):
-            news_source_mode_raw = "alpaca"
-        x_bearer_token = _parse_optional_str(os.getenv("X_BEARER_TOKEN"))
-        news_truth_social_enabled = _parse_bool_default(
-            os.getenv("NEWS_TRUTH_SOCIAL_ENABLED"), False
-        )
-        news_bluesky_enabled = _parse_bool_default(
-            os.getenv("NEWS_BLUESKY_ENABLED"), True
-        )
-        news_bluesky_firehose_enabled = _parse_bool_default(
-            os.getenv("NEWS_BLUESKY_FIREHOSE_ENABLED"), True
-        )
-        news_bluesky_jetstream_replay_seconds = min(
-            _parse_positive_int_default(
-                os.getenv("NEWS_BLUESKY_JETSTREAM_REPLAY_SECONDS"), 0
-            ),
-            86400,
-        )
-        news_x_syndication_enabled = _parse_bool_default(
-            os.getenv("NEWS_X_SYNDICATION_ENABLED"), False  # blocked on cloud/datacenter IPs
-        )
-        news_x_api_stream_enabled = _parse_bool_default(
-            os.getenv("NEWS_X_API_STREAM_ENABLED"), False
-        )
-        news_x_syndication_force = _parse_bool_default(
-            os.getenv("NEWS_X_SYNDICATION_FORCE"), False
-        )
-        news_x_monitor_enabled = _parse_bool_default(
-            os.getenv("NEWS_X_MONITOR_ENABLED"), False  # Nitter is defunct; off by default
-        )
-        news_telegram_social_posts = _parse_bool_default(
-            os.getenv("NEWS_TELEGRAM_SOCIAL_POSTS"), True
-        )
-        news_telegram_debug_social_raw = _parse_bool_default(
-            os.getenv("NEWS_TELEGRAM_DEBUG_SOCIAL_RAW"), False
-        )
 
         return AppConfig(
             stock_data_api_key=_required("STOCK_DATA_API_KEY"),
@@ -217,32 +122,6 @@ class AppConfig:
             consensus_min_models=consensus_min_models,
             consensus_min_confidence_pct=consensus_min_confidence_pct,
             consensus_min_confidence_crypto_pct=consensus_min_confidence_crypto_pct,
-            news_trading_enabled=news_trading_enabled,
-            news_alpaca_news_enabled=news_alpaca_news_enabled,
-            news_polygon_api_key=news_polygon_api_key,
-            news_crypto_panic_api_key=news_crypto_panic_api_key,
-            news_trade_dollars=news_trade_dollars,
-            news_max_hold_minutes=news_max_hold_minutes,
-            news_stop_loss_pct=news_stop_loss_pct,
-            news_take_profit_pct=news_take_profit_pct,
-            news_min_confidence_pct=news_min_confidence_pct,
-            news_crypto_enabled=news_crypto_enabled,
-            news_equity_enabled=news_equity_enabled,
-            binance_api_key=binance_api_key,
-            binance_secret_key=binance_secret_key,
-            binance_testnet=binance_testnet,
-            news_source_mode=news_source_mode_raw,
-            x_bearer_token=x_bearer_token,
-            news_truth_social_enabled=news_truth_social_enabled,
-            news_bluesky_enabled=news_bluesky_enabled,
-            news_bluesky_firehose_enabled=news_bluesky_firehose_enabled,
-            news_bluesky_jetstream_replay_seconds=news_bluesky_jetstream_replay_seconds,
-            news_x_syndication_enabled=news_x_syndication_enabled,
-            news_x_api_stream_enabled=news_x_api_stream_enabled,
-            news_x_syndication_force=news_x_syndication_force,
-            news_x_monitor_enabled=news_x_monitor_enabled,
-            news_telegram_social_posts=news_telegram_social_posts,
-            news_telegram_debug_social_raw=news_telegram_debug_social_raw,
         )
 
     def twelve_data_api_keys(self) -> List[str]:
@@ -359,25 +238,5 @@ def _parse_positive_float_default(raw: str | None, default: float) -> float:
     try:
         v = float(str(raw).strip())
         return v if v > 0 else default
-    except (ValueError, TypeError):
-        return default
-
-
-def _parse_positive_int_default(raw: str | None, default: int) -> int:
-    if raw is None or not str(raw).strip():
-        return default
-    try:
-        v = int(str(raw).strip())
-        return v if v > 0 else default
-    except (ValueError, TypeError):
-        return default
-
-
-def _parse_confidence_pct_default(raw: str | None, default: int) -> int:
-    if raw is None or not str(raw).strip():
-        return default
-    try:
-        v = int(str(raw).strip())
-        return v if 0 <= v <= 100 else default
     except (ValueError, TypeError):
         return default

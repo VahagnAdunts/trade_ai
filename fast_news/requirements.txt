@@ -1,0 +1,4 @@
+# Installed in the main Tred_ai venv, or: pip install -r fast_news/requirements.txt
+httpx>=0.28.0
+python-dotenv>=1.0.0
+websockets>=14.0
